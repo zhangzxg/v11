@@ -360,54 +360,54 @@ class DetectionModel(BaseModel):
         >>> results = model.predict(image_tensor)
     """
 
-def __init__(self, cfg="yolov11n.yaml", ch=3, nc=None, verbose=True):
-    super().__init__()
-    self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
+    def __init__(self, cfg="yolov11n.yaml", ch=3, nc=None, verbose=True):
+        super().__init__()
+        self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
 
-    if cfg == 'yolov11_smallobject':
-        from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
-        self.model = YOLOv11SmallObjectDetector(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
-    else:
-        if self.yaml["backbone"][0][2] == "Silence":
-            LOGGER.warning(
-                "YOLOv9 `Silence` module is deprecated in favor of torch.nn.Identity. "
-                "Please delete local *.pt file and re-download the latest model checkpoint."
-            )
-            self.yaml["backbone"][0][2] = "nn.Identity"
+        if cfg == 'yolov11_smallobject':
+            from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
+            self.model = YOLOv11SmallObjectDetector(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+        else:
+            if self.yaml["backbone"][0][2] == "Silence":
+                LOGGER.warning(
+                    "YOLOv9 `Silence` module is deprecated in favor of torch.nn.Identity. "
+                    "Please delete local *.pt file and re-download the latest model checkpoint."
+                )
+                self.yaml["backbone"][0][2] = "nn.Identity"
 
-        self.yaml["channels"] = ch
-        if nc and nc != self.yaml["nc"]:
-            LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
-            self.yaml["nc"] = nc
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)
+            self.yaml["channels"] = ch
+            if nc and nc != self.yaml["nc"]:
+                LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
+                self.yaml["nc"] = nc
+            self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)
 
-    self.names = {i: f"{i}" for i in range(self.yaml["nc"])}
-    self.inplace = self.yaml.get("inplace", True)
-    self.end2end = getattr(self.model[-1], "end2end", False) if isinstance(self.model, nn.Sequential) else False
+        self.names = {i: f"{i}" for i in range(self.yaml["nc"])}
+        self.inplace = self.yaml.get("inplace", True)
+        self.end2end = getattr(self.model[-1], "end2end", False) if isinstance(self.model, nn.Sequential) else False
 
-    # 推理 stride 自动估计（兼容新旧 Detect 类）
-    if hasattr(self.model, '__len__') and isinstance(self.model[-1], Detect):
-        m = self.model[-1]
-        s = 256
-        m.inplace = self.inplace
+        # 推理 stride 自动估计（兼容新旧 Detect 类）
+        if hasattr(self.model, '__len__') and isinstance(self.model[-1], Detect):
+            m = self.model[-1]
+            s = 256
+            m.inplace = self.inplace
 
-        def _forward(x):
-            return self.forward(x)[0] if hasattr(self, 'forward') else self.model(x)
+            def _forward(x):
+                return self.forward(x)[0] if hasattr(self, 'forward') else self.model(x)
 
-        self.model.eval()
-        m.training = True
-        m.stride = torch.tensor([s / x.shape[-2] for x in _forward(torch.zeros(1, ch, s, s))])
-        self.stride = m.stride
-        self.model.train()
-        m.bias_init()
-    else:
-        self.stride = torch.tensor([32])
+            self.model.eval()
+            m.training = True
+            m.stride = torch.tensor([s / x.shape[-2] for x in _forward(torch.zeros(1, ch, s, s))])
+            self.stride = m.stride
+            self.model.train()
+            m.bias_init()
+        else:
+            self.stride = torch.tensor([32])
 
-        # Init weights, biases
-        initialize_weights(self)
-        if verbose:
-            self.info()
-            LOGGER.info("")
+            # Init weights, biases
+            initialize_weights(self)
+            if verbose:
+                self.info()
+                LOGGER.info("")
 
     def _predict_augment(self, x):
         """Perform augmentations on input image x and return augmented inference and train outputs.
