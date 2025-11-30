@@ -1,0 +1,4 @@
+
+nc: 80   # 类别数，需与你模型 __init__ 中一致
+backbone:
+  - [custom, 1, YOLOv11SmallObjectDetector]

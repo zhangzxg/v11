@@ -1,0 +1,6 @@
+# uav_small.yaml
+train: /absolute/path/to/train/images
+val: /absolute/path/to/val/images
+
+nc: 3  # 类别数，和模型保持一致
+names: ['person', 'car', 'tree']  # 你训练集中小目标的真实类别名称

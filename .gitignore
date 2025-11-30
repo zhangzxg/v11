@@ -1,0 +1,18 @@
+cd ~/autodl-tmp
+
+cat > .gitignore << 'EOF'
+.autodl/
+yolov11/
+
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.env/
+
+# 一般也不建议把超大的压缩包和数据推到 GitHub
+*.7z
+*.zip
+*.tar
+*.tar.gz
+EOF
