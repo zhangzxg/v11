@@ -6,4 +6,14 @@ from .rtdetr import RTDETR
 from .sam import SAM
 from .yolo import YOLO, YOLOE, YOLOWorld
 from .yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
-__all__ = "NAS", "RTDETR", "SAM", "YOLO", "YOLOE", "FastSAM", "YOLOWorld","YOLOv11SmallObjectDetector"  # allow simpler import
+
+__all__ = (
+    "NAS",
+    "RTDETR",
+    "SAM",
+    "YOLO",
+    "YOLOE",
+    "FastSAM",
+    "YOLOWorld",
+    "YOLOv11SmallObjectDetector",
+)  # allow simpler import

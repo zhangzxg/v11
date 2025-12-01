@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 # Ghost模块
 class GhostModule(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, ratio=2):
@@ -14,18 +15,21 @@ class GhostModule(nn.Module):
         self.primary_conv = nn.Sequential(
             nn.Conv2d(in_channels, init_channels, kernel_size, padding=kernel_size // 2, bias=False),
             nn.BatchNorm2d(init_channels),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
         self.cheap_operation = nn.Sequential(
-            nn.Conv2d(init_channels, new_channels, kernel_size=3, stride=1, padding=1, groups=init_channels, bias=False),
+            nn.Conv2d(
+                init_channels, new_channels, kernel_size=3, stride=1, padding=1, groups=init_channels, bias=False
+            ),
             nn.BatchNorm2d(new_channels),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
 
     def forward(self, x):
         x1 = self.primary_conv(x)
         x2 = self.cheap_operation(x1)
         return torch.cat([x1, x2], dim=1)
+
 
 # 小目标分支
 class SmallObjectBranch(nn.Module):
@@ -34,11 +38,12 @@ class SmallObjectBranch(nn.Module):
         self.block = nn.Sequential(
             GhostModule(in_channels, out_channels),
             GhostModule(out_channels, out_channels),
-            GhostModule(out_channels, out_channels)
+            GhostModule(out_channels, out_channels),
         )
 
     def forward(self, x):
         return self.block(x)
+
 
 # Swin 注意力窗口（简化 + 相对位置编码）
 class LocalAttention(nn.Module):
@@ -51,13 +56,14 @@ class LocalAttention(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
-        q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
+        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]
         q = q + self.rel_pos
         k = k + self.rel_pos
-        attn = (q * k).sum(1, keepdim=True) / (C ** 0.5)
+        attn = (q * k).sum(1, keepdim=True) / (C**0.5)
         attn = F.softmax(attn, dim=-1)
         out = attn * v
         return self.proj(out)
+
 
 # 跨尺度融合模块（改进版）
 class CrossScaleAttention(nn.Module):
@@ -72,38 +78,23 @@ class CrossScaleAttention(nn.Module):
 
     def forward(self, small_feat, main_feat):
         if main_feat.shape[2:] != small_feat.shape[2:]:
-            main_feat = F.interpolate(main_feat, size=small_feat.shape[2:], mode='nearest')
+            main_feat = F.interpolate(main_feat, size=small_feat.shape[2:], mode="nearest")
         main_feat = self.align_main(main_feat) + self.pos_embed_main
         small_feat = small_feat + self.pos_embed_small
         small_attn = self.attn_small(small_feat)
         main_attn = self.attn_main(main_feat)
         return self.fuse(torch.cat([small_attn, main_attn], dim=1))
 
+
 # 主干结构
 class BackboneWithSmallBranch(nn.Module):
     def __init__(self):
         super().__init__()
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU()
-        )
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU()
-        )
+        self.stem = nn.Sequential(nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU())
+        self.layer1 = nn.Sequential(nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU())
         self.small_branch = SmallObjectBranch(64, 64)
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(64, 128, 3, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
-        self.layer3 = nn.Sequential(
-            nn.Conv2d(128, 256, 3, stride=2, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU()
-        )
+        self.layer2 = nn.Sequential(nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU())
+        self.layer3 = nn.Sequential(nn.Conv2d(128, 256, 3, stride=2, padding=1), nn.BatchNorm2d(256), nn.ReLU())
 
     def forward(self, x):
         x = self.stem(x)
@@ -113,6 +104,7 @@ class BackboneWithSmallBranch(nn.Module):
         p4 = self.layer3(p3)
         return p2_small, p3, p4
 
+
 # Focal Loss
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0):
@@ -121,9 +113,10 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
 
     def forward(self, logits, targets):
-        BCE_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+        BCE_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
         pt = torch.exp(-BCE_loss)
         return (self.alpha * (1 - pt) ** self.gamma * BCE_loss).mean()
+
 
 # 主模型 + 蒸馏
 class YOLOv11SmallObjectDetector(nn.Module):
@@ -131,13 +124,9 @@ class YOLOv11SmallObjectDetector(nn.Module):
         super().__init__()
         self.backbone = BackboneWithSmallBranch()
         self.fusion = CrossScaleAttention(in_main=128, in_small=64)
-        self.head = nn.Sequential(
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, 3 * (5 + 80), 1)
-        )
+        self.head = nn.Sequential(nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), nn.Conv2d(128, 3 * (5 + 80), 1))
         self.use_teacher = use_teacher
-        self.kl = nn.KLDivLoss(reduction='batchmean')
+        self.kl = nn.KLDivLoss(reduction="batchmean")
 
     def forward(self, x, teacher_feats=None, teacher_output=None):
         small_feat, p3, p4 = self.backbone(x)
@@ -154,7 +143,8 @@ class YOLOv11SmallObjectDetector(nn.Module):
                 loss_output = self.kl(F.log_softmax(s_logits, dim=-1), F.softmax(t_logits, dim=-1))
         return out, loss_feat, loss_output
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     model = YOLOv11SmallObjectDetector(use_teacher=True)
     dummy_input = torch.randn(1, 3, 640, 640)
     teacher_feats = [torch.randn(1, 128, 80, 80), torch.randn(1, 256, 40, 40)]
