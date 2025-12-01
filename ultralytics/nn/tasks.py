@@ -165,6 +165,13 @@ class BaseModel(torch.nn.Module):
         Returns:
             (torch.Tensor): The last output of the model.
         """
+        # Handle custom models like YOLOv11SmallObjectDetector that return multiple values
+        if not isinstance(self.model, torch.nn.Sequential) and hasattr(self.model, '__class__'):
+            if self.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
+                result = self.model(x)
+                # Return only the first output (prediction tensor), ignore loss_feat and loss_output
+                return result[0] if isinstance(result, tuple) else result
+        
         y, dt, embeddings = [], [], []  # outputs
         embed = frozenset(embed) if embed is not None else {-1}
         max_idx = max(embed)
@@ -367,6 +374,14 @@ class DetectionModel(BaseModel):
         if cfg == 'yolov11_smallobject':
             from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
             self.model = YOLOv11SmallObjectDetector(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+        elif (isinstance(self.yaml, dict) and 
+              "backbone" in self.yaml and 
+              len(self.yaml["backbone"]) > 0 and 
+              len(self.yaml["backbone"][0]) > 2 and
+              self.yaml["backbone"][0][2] == "YOLOv11SmallObjectDetector"):
+            # Handle YAML file with YOLOv11SmallObjectDetector custom module
+            from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
+            self.model = YOLOv11SmallObjectDetector(use_teacher=False)
         else:
             if self.yaml["backbone"][0][2] == "Silence":
                 LOGGER.warning(
@@ -1569,18 +1584,38 @@ def parse_model(d, ch, verbose=True):
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
-        m = (
-            getattr(torch.nn, m[3:])
-            if "nn." in m
-            else getattr(__import__("torchvision").ops, m[16:])
-            if "torchvision.ops." in m
-            else globals()[m]
-        )  # get module
+        # Handle custom modules like YOLOv11SmallObjectDetector
+        if m == "YOLOv11SmallObjectDetector" and m not in globals():
+            from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
+            m = YOLOv11SmallObjectDetector
+        else:
+            m = (
+                getattr(torch.nn, m[3:])
+                if "nn." in m
+                else getattr(__import__("torchvision").ops, m[16:])
+                if "torchvision.ops." in m
+                else globals()[m]
+            )  # get module
         for j, a in enumerate(args):
             if isinstance(a, str):
                 with contextlib.suppress(ValueError):
                     args[j] = locals()[a] if a in locals() else ast.literal_eval(a)
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
+        
+        # Handle custom modules like YOLOv11SmallObjectDetector that don't follow standard channel pattern
+        if isinstance(m, type) and m.__name__ == "YOLOv11SmallObjectDetector":
+            # Skip channel processing for custom modules, instantiate directly
+            m_ = m(*args) if args else m()
+            t = str(m)[8:-2].replace("__main__.", "")  # module type
+            m_.np = sum(x.numel() for x in m_.parameters())  # number params
+            m_.i, m_.f, m_.type = i, -1, t  # attach index, 'from' index, type
+            if verbose:
+                LOGGER.info(f"{i:>3}{-1:>20}{n_:>3}{m_.np:10.0f}  {t:<45}{args!s:<30}")  # print
+            layers.append(m_)
+            ch.append(m_.head[-1].out_channels if hasattr(m_, 'head') and len(m_.head) > 0 else ch[-1])
+            save.append(i % (len(d["backbone"]) + len(d["head"])))
+            continue
+        
         if m in base_modules:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
