@@ -199,20 +199,31 @@ class v8DetectionLoss:
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
 
-        m = model.model[-1]  # Detect() module
+        # Check if model is indexable (Sequential, list, tuple) or custom model
+        if isinstance(model.model, (nn.Sequential, list, tuple)) and len(model.model) > 0:
+            m = model.model[-1]  # Detect() module
+            self.stride = m.stride  # model strides
+            self.nc = m.nc  # number of classes
+            self.no = m.nc + m.reg_max * 4
+            self.reg_max = m.reg_max
+            self.use_dfl = m.reg_max > 1
+        else:
+            # Handle custom models like YOLOv11SmallObjectDetector
+            # For custom models, use default values from model.yaml or args
+            from ultralytics.nn.modules import Detect
+            self.stride = torch.tensor([8.0, 16.0, 32.0], device=device)  # default strides
+            self.nc = getattr(model, 'nc', h.get('nc', 80))  # number of classes from model or args
+            self.reg_max = 16  # default reg_max
+            self.no = self.nc + self.reg_max * 4
+            self.use_dfl = self.reg_max > 1
+        
         self.bce = nn.BCEWithLogitsLoss(reduction="none")
         self.hyp = h
-        self.stride = m.stride  # model strides
-        self.nc = m.nc  # number of classes
-        self.no = m.nc + m.reg_max * 4
-        self.reg_max = m.reg_max
         self.device = device
 
-        self.use_dfl = m.reg_max > 1
-
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
-        self.bbox_loss = BboxLoss(m.reg_max).to(device)
-        self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
+        self.bbox_loss = BboxLoss(self.reg_max).to(device)
+        self.proj = torch.arange(self.reg_max, dtype=torch.float, device=device)
 
     def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor) -> torch.Tensor:
         """Preprocess targets by converting to tensor format and scaling coordinates."""
@@ -489,7 +500,12 @@ class v8PoseLoss(v8DetectionLoss):
     def __init__(self, model):  # model must be de-paralleled
         """Initialize v8PoseLoss with model parameters and keypoint-specific loss functions."""
         super().__init__(model)
-        self.kpt_shape = model.model[-1].kpt_shape
+        # Check if model is indexable before accessing [-1]
+        if isinstance(model.model, (nn.Sequential, list, tuple)) and len(model.model) > 0:
+            self.kpt_shape = model.model[-1].kpt_shape
+        else:
+            # For custom models, use default kpt_shape
+            self.kpt_shape = [17, 3]  # default keypoint shape
         self.bce_pose = nn.BCEWithLogitsLoss()
         is_pose = self.kpt_shape == [17, 3]
         nkpt = self.kpt_shape[0]  # number of keypoints

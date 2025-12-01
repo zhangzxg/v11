@@ -338,6 +338,22 @@ class BaseModel(torch.nn.Module):
 
         if preds is None:
             preds = self.forward(batch["img"])
+        
+        # Handle custom models like YOLOv11SmallObjectDetector
+        # Convert single tensor output to list format expected by loss function
+        if not isinstance(self.model, (nn.Sequential, list, tuple)):
+            if hasattr(self.model, '__class__') and self.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
+                # Custom model returns (out, loss_feat, loss_output) or just out
+                if isinstance(preds, tuple):
+                    preds = preds[0]  # Take only the prediction tensor
+                # Convert single tensor to list format (expected by loss function)
+                if isinstance(preds, torch.Tensor):
+                    # For YOLOv11SmallObjectDetector, output is (batch, 3*(5+nc), H, W)
+                    # We need to split it into 3 feature maps (P3, P4, P5 equivalent)
+                    # For simplicity, we'll use the same output for all 3 scales
+                    # This is a workaround - ideally the model should output multiple scales
+                    preds = [preds, preds, preds]  # Use same output for all scales
+        
         return self.criterion(preds, batch)
 
     def init_criterion(self):
