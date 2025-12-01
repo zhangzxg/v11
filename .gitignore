@@ -16,3 +16,4 @@ venv/
 *.tar
 *.tar.gz
 EOF
+*.pt
