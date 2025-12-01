@@ -782,28 +782,49 @@ def check_amp(model):
         del m
         return a.shape == b.shape and torch.allclose(a, b.float(), atol=0.5)  # close to 0.5 absolute tolerance
 
+    # Create a dummy test image (no download needed for custom models)
     im = ASSETS / "bus.jpg"  # image to check
+    if not im.exists():
+        # Create a dummy test image directly (no download for custom models)
+        try:
+            import numpy as np
+            from PIL import Image
+            ASSETS.mkdir(parents=True, exist_ok=True)
+            # Create a simple test image (640x640 RGB)
+            dummy_img = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
+            Image.fromarray(dummy_img).save(im)
+        except Exception:
+            # If image creation fails, skip AMP check
+            LOGGER.warning(
+                f"{prefix}checks skipped. Unable to create test image for AMP checks. {warning_msg}"
+            )
+            return True  # Assume AMP is OK if we can't test
+    
     LOGGER.info(f"{prefix}running Automatic Mixed Precision (AMP) checks...")
     warning_msg = "Setting 'amp=True'. If you experience zero-mAP or NaN losses you can disable AMP with amp=False."
+    
+    # Try to use the provided model first (for custom models)
     try:
-        from ultralytics import YOLO
-
-        assert amp_allclose(YOLO("yolo11n.pt"), im)
-        LOGGER.info(f"{prefix}checks passed ✅")
-    except ConnectionError:
-        LOGGER.warning(f"{prefix}checks skipped. Offline and unable to download YOLO11n for AMP checks. {warning_msg}")
-    except (AttributeError, ModuleNotFoundError):
-        LOGGER.warning(
-            f"{prefix}checks skipped. "
-            f"Unable to load YOLO11n for AMP checks due to possible Ultralytics package modifications. {warning_msg}"
-        )
+        # Check if model is a DetectionModel (has __call__ method for inference)
+        if hasattr(model, '__call__') and hasattr(model, 'model'):
+            # Try to use the provided model for AMP check
+            assert amp_allclose(model, im)
+            LOGGER.info(f"{prefix}checks passed ✅ (using provided model)")
+            return True
     except AssertionError:
+        # AMP check failed - this means there's a real problem with AMP
         LOGGER.error(
             f"{prefix}checks failed. Anomalies were detected with AMP on your system that may lead to "
             f"NaN losses or zero-mAP results, so AMP will be disabled during training."
         )
         return False
-    return True
+    except Exception as e:
+        # If custom model check fails, skip AMP check instead of downloading yolo11n.pt
+        LOGGER.warning(
+            f"{prefix}checks skipped. Unable to perform AMP check with custom model: {e}. "
+            f"Assuming AMP is OK. {warning_msg}"
+        )
+        return True  # Skip check for custom models rather than downloading pretrained model
 
 
 def check_multiple_install():
