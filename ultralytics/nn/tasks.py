@@ -211,7 +211,11 @@ class BaseModel(torch.nn.Module):
         except ImportError:
             thop = None  # conda support without 'ultralytics-thop' installed
 
-        c = m == self.model[-1] and isinstance(x, list)  # is final layer list, copy input as inplace fix
+        # Check if model is indexable before accessing [-1]
+        is_final_layer = False
+        if isinstance(self.model, (nn.Sequential, list, tuple)) and len(self.model) > 0:
+            is_final_layer = m == self.model[-1]
+        c = is_final_layer and isinstance(x, list)  # is final layer list, copy input as inplace fix
         flops = thop.profile(m, inputs=[x.copy() if c else x], verbose=False)[0] / 1e9 * 2 if thop else 0  # GFLOPs
         t = time_sync()
         for _ in range(10):
@@ -286,13 +290,15 @@ class BaseModel(torch.nn.Module):
             (BaseModel): An updated BaseModel object.
         """
         self = super()._apply(fn)
-        m = self.model[-1]  # Detect()
-        if isinstance(
-            m, Detect
-        ):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect, YOLOEDetect, YOLOESegment
-            m.stride = fn(m.stride)
-            m.anchors = fn(m.anchors)
-            m.strides = fn(m.strides)
+        # Check if model is indexable (Sequential, list, tuple) before accessing [-1]
+        if isinstance(self.model, (nn.Sequential, list, tuple)) and len(self.model) > 0:
+            m = self.model[-1]  # Detect()
+            if isinstance(
+                m, Detect
+            ):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect, YOLOEDetect, YOLOESegment
+                m.stride = fn(m.stride)
+                m.anchors = fn(m.anchors)
+                m.strides = fn(m.strides)
         return self
 
     def load(self, weights, verbose=True):
@@ -500,7 +506,12 @@ class DetectionModel(BaseModel):
         Returns:
             (list[torch.Tensor]): Clipped detection tensors.
         """
-        nl = self.model[-1].nl  # number of detection layers (P3-P5)
+        # Check if model is indexable before accessing [-1]
+        if isinstance(self.model, (nn.Sequential, list, tuple)) and len(self.model) > 0:
+            nl = self.model[-1].nl  # number of detection layers (P3-P5)
+        else:
+            # For custom models, use default value or skip clipping
+            return y
         g = sum(4**x for x in range(nl))  # grid points
         e = 1  # exclude layer count
         i = (y[0].shape[-1] // g) * sum(4**x for x in range(e))  # indices
@@ -755,9 +766,11 @@ class RTDETRDetectionModel(DetectionModel):
             (RTDETRDetectionModel): An updated BaseModel object.
         """
         self = super()._apply(fn)
-        m = self.model[-1]
-        m.anchors = fn(m.anchors)
-        m.valid_mask = fn(m.valid_mask)
+        # Check if model is indexable before accessing [-1]
+        if isinstance(self.model, (nn.Sequential, list, tuple)) and len(self.model) > 0:
+            m = self.model[-1]
+            m.anchors = fn(m.anchors)
+            m.valid_mask = fn(m.valid_mask)
         return self
 
     def init_criterion(self):
