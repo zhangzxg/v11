@@ -364,8 +364,9 @@ class DetectionModel(BaseModel):
         super().__init__()
         self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
 
-        if cfg == 'yolov11_smallobject':
+        if cfg == "yolov11_smallobject":
             from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
+
             self.model = YOLOv11SmallObjectDetector(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
         else:
             if self.yaml["backbone"][0][2] == "Silence":
@@ -386,13 +387,13 @@ class DetectionModel(BaseModel):
         self.end2end = getattr(self.model[-1], "end2end", False) if isinstance(self.model, nn.Sequential) else False
 
         # 推理 stride 自动估计（兼容新旧 Detect 类）
-        if hasattr(self.model, '__len__') and isinstance(self.model[-1], Detect):
+        if hasattr(self.model, "__len__") and isinstance(self.model[-1], Detect):
             m = self.model[-1]
             s = 256
             m.inplace = self.inplace
 
             def _forward(x):
-                return self.forward(x)[0] if hasattr(self, 'forward') else self.model(x)
+                return self.forward(x)[0] if hasattr(self, "forward") else self.model(x)
 
             self.model.eval()
             m.training = True

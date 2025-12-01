@@ -1,4 +1,3 @@
-
-nc: 80   # Àà±ðÊý£¬ÐèÓëÄãÄ£ÐÍ __init__ ÖÐÒ»ÖÂ
+nc: 80 # ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä£ï¿½ï¿½ __init__ ï¿½ï¿½Ò»ï¿½ï¿½
 backbone:
   - [custom, 1, YOLOv11SmallObjectDetector]
