@@ -381,7 +381,28 @@ class DetectionModel(BaseModel):
               self.yaml["backbone"][0][2] == "YOLOv11SmallObjectDetector"):
             # Handle YAML file with YOLOv11SmallObjectDetector custom module
             from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
-            self.model = YOLOv11SmallObjectDetector(use_teacher=False)
+            
+            # 从YAML读取消融实验配置参数
+            ablation_config = self.yaml.get("ablation", {})
+            use_teacher = ablation_config.get("use_teacher", False)
+            use_small_branch = ablation_config.get("use_small_branch", True)
+            use_ghost = ablation_config.get("use_ghost", True)
+            use_attention = ablation_config.get("use_attention", True)
+            use_pos_encoding = ablation_config.get("use_pos_encoding", True)
+            use_cross_scale_fusion = ablation_config.get("use_cross_scale_fusion", True)
+            
+            # 获取类别数
+            model_nc = nc if nc is not None else self.yaml.get("nc", 80)
+            
+            self.model = YOLOv11SmallObjectDetector(
+                use_teacher=use_teacher,
+                use_small_branch=use_small_branch,
+                use_ghost=use_ghost,
+                use_attention=use_attention,
+                use_pos_encoding=use_pos_encoding,
+                use_cross_scale_fusion=use_cross_scale_fusion,
+                nc=model_nc
+            )
         else:
             if self.yaml["backbone"][0][2] == "Silence":
                 LOGGER.warning(

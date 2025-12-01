@@ -7,7 +7,7 @@ from ultralytics import YOLO
 
 
 if __name__ == '__main__':
-    model = YOLO('v11-small.yaml') # YOLO11
+    model = YOLO('v11-small-full.yaml') # YOLO11 完整模型（所有改进点）
     # model.load('yolo11n.pt') # loading pretrain weights
     model.train(
 	data='/root/autodl-tmp/v11/v11-tr/v11-data.yaml',

@@ -1,0 +1,21 @@
+# 消融实验：不使用注意力机制（使用标准卷积替代）
+# Parameters
+nc: 80   # number of classes
+
+# Ablation study configuration
+ablation:
+  use_teacher: false
+  use_small_branch: true
+  use_ghost: true
+  use_attention: false            # ❌ 关闭注意力机制
+  use_pos_encoding: false         # 关闭注意力时，位置编码也会关闭
+  use_cross_scale_fusion: true
+
+# Backbone
+backbone:
+  - [custom, 1, YOLOv11SmallObjectDetector]
+
+# Head
+head:
+  - [-1, 1, Detect, [nc]]
+

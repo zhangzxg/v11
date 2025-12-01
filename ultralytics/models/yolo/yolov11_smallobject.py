@@ -29,60 +29,113 @@ class GhostModule(nn.Module):
 
 # 小目标分支
 class SmallObjectBranch(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, use_ghost=True):
         super().__init__()
-        self.block = nn.Sequential(
-            GhostModule(in_channels, out_channels),
-            GhostModule(out_channels, out_channels),
-            GhostModule(out_channels, out_channels)
-        )
+        if use_ghost:
+            self.block = nn.Sequential(
+                GhostModule(in_channels, out_channels),
+                GhostModule(out_channels, out_channels),
+                GhostModule(out_channels, out_channels)
+            )
+        else:
+            # 使用标准卷积替代Ghost模块
+            self.block = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True)
+            )
 
     def forward(self, x):
         return self.block(x)
 
 # Swin 注意力窗口（简化 + 相对位置编码）
 class LocalAttention(nn.Module):
-    def __init__(self, dim, window_size=7):
+    def __init__(self, dim, window_size=7, use_attention=True, use_pos_encoding=True):
         super().__init__()
-        self.to_qkv = nn.Conv2d(dim, dim * 3, 1)
-        self.proj = nn.Conv2d(dim, dim, 1)
-        self.rel_pos = nn.Parameter(torch.randn(1, dim, 1, 1))  # 简化位置编码
+        self.use_attention = use_attention
+        self.use_pos_encoding = use_pos_encoding
+        if use_attention:
+            self.to_qkv = nn.Conv2d(dim, dim * 3, 1)
+            self.proj = nn.Conv2d(dim, dim, 1)
+            if use_pos_encoding:
+                self.rel_pos = nn.Parameter(torch.randn(1, dim, 1, 1))  # 简化位置编码
+            else:
+                self.rel_pos = None
+        else:
+            # 使用标准卷积替代注意力机制
+            self.conv = nn.Sequential(
+                nn.Conv2d(dim, dim, 3, padding=1, bias=False),
+                nn.BatchNorm2d(dim),
+                nn.ReLU(inplace=True)
+            )
 
     def forward(self, x):
-        B, C, H, W = x.shape
-        qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
-        q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
-        q = q + self.rel_pos
-        k = k + self.rel_pos
-        attn = (q * k).sum(1, keepdim=True) / (C ** 0.5)
-        attn = F.softmax(attn, dim=-1)
-        out = attn * v
-        return self.proj(out)
+        if self.use_attention:
+            B, C, H, W = x.shape
+            qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
+            q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
+            if self.use_pos_encoding and self.rel_pos is not None:
+                q = q + self.rel_pos
+                k = k + self.rel_pos
+            attn = (q * k).sum(1, keepdim=True) / (C ** 0.5)
+            attn = F.softmax(attn, dim=-1)
+            out = attn * v
+            return self.proj(out)
+        else:
+            return self.conv(x)
 
 # 跨尺度融合模块（改进版）
 class CrossScaleAttention(nn.Module):
-    def __init__(self, in_main, in_small):
+    def __init__(self, in_main, in_small, use_attention=True, use_pos_encoding=True):
         super().__init__()
+        self.use_attention = use_attention
+        self.use_pos_encoding = use_pos_encoding
         self.align_main = nn.Conv2d(in_main, in_small, 1)
-        self.pos_embed_main = nn.Parameter(torch.randn(1, in_small, 1, 1))
-        self.pos_embed_small = nn.Parameter(torch.randn(1, in_small, 1, 1))
-        self.attn_small = LocalAttention(in_small)
-        self.attn_main = LocalAttention(in_small)
-        self.fuse = nn.Conv2d(in_small * 2, in_small, 1)
+        if use_pos_encoding:
+            self.pos_embed_main = nn.Parameter(torch.randn(1, in_small, 1, 1))
+            self.pos_embed_small = nn.Parameter(torch.randn(1, in_small, 1, 1))
+        else:
+            self.pos_embed_main = None
+            self.pos_embed_small = None
+        
+        if use_attention:
+            self.attn_small = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
+            self.attn_main = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
+            self.fuse = nn.Conv2d(in_small * 2, in_small, 1)
+        else:
+            # 使用简单concat + conv替代注意力融合
+            self.fuse = nn.Sequential(
+                nn.Conv2d(in_small * 2, in_small, 1, bias=False),
+                nn.BatchNorm2d(in_small),
+                nn.ReLU(inplace=True)
+            )
 
     def forward(self, small_feat, main_feat):
         if main_feat.shape[2:] != small_feat.shape[2:]:
             main_feat = F.interpolate(main_feat, size=small_feat.shape[2:], mode='nearest')
-        main_feat = self.align_main(main_feat) + self.pos_embed_main
-        small_feat = small_feat + self.pos_embed_small
-        small_attn = self.attn_small(small_feat)
-        main_attn = self.attn_main(main_feat)
-        return self.fuse(torch.cat([small_attn, main_attn], dim=1))
+        main_feat = self.align_main(main_feat)
+        if self.use_pos_encoding and self.pos_embed_main is not None:
+            main_feat = main_feat + self.pos_embed_main
+            small_feat = small_feat + self.pos_embed_small
+        
+        if self.use_attention:
+            small_attn = self.attn_small(small_feat)
+            main_attn = self.attn_main(main_feat)
+            return self.fuse(torch.cat([small_attn, main_attn], dim=1))
+        else:
+            return self.fuse(torch.cat([small_feat, main_feat], dim=1))
 
 # 主干结构
 class BackboneWithSmallBranch(nn.Module):
-    def __init__(self):
+    def __init__(self, use_small_branch=True, use_ghost=True):
         super().__init__()
+        self.use_small_branch = use_small_branch
         self.stem = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.BatchNorm2d(32),
@@ -93,7 +146,8 @@ class BackboneWithSmallBranch(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU()
         )
-        self.small_branch = SmallObjectBranch(64, 64)
+        if use_small_branch:
+            self.small_branch = SmallObjectBranch(64, 64, use_ghost=use_ghost)
         self.layer2 = nn.Sequential(
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
@@ -108,7 +162,11 @@ class BackboneWithSmallBranch(nn.Module):
     def forward(self, x):
         x = self.stem(x)
         p2 = self.layer1(x)
-        p2_small = self.small_branch(p2)
+        if self.use_small_branch:
+            p2_small = self.small_branch(p2)
+        else:
+            # 如果不使用小目标分支，直接使用p2
+            p2_small = p2
         p3 = self.layer2(p2)
         p4 = self.layer3(p3)
         return p2_small, p3, p4
@@ -127,21 +185,61 @@ class FocalLoss(nn.Module):
 
 # 主模型 + 蒸馏
 class YOLOv11SmallObjectDetector(nn.Module):
-    def __init__(self, use_teacher=False):
+    def __init__(self, use_teacher=False, 
+                 use_small_branch=True,      # 消融: 是否使用小目标分支
+                 use_ghost=True,             # 消融: 是否使用Ghost模块
+                 use_attention=True,         # 消融: 是否使用注意力机制
+                 use_pos_encoding=True,      # 消融: 是否使用位置编码
+                 use_cross_scale_fusion=True, # 消融: 是否使用跨尺度融合
+                 nc=80):                     # 类别数
         super().__init__()
-        self.backbone = BackboneWithSmallBranch()
-        self.fusion = CrossScaleAttention(in_main=128, in_small=64)
-        self.head = nn.Sequential(
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, 3 * (5 + 80), 1)
-        )
         self.use_teacher = use_teacher
-        self.kl = nn.KLDivLoss(reduction='batchmean')
+        self.use_small_branch = use_small_branch
+        self.use_cross_scale_fusion = use_cross_scale_fusion
+        
+        # 构建backbone
+        self.backbone = BackboneWithSmallBranch(
+            use_small_branch=use_small_branch,
+            use_ghost=use_ghost
+        )
+        
+        # 构建融合模块
+        if use_cross_scale_fusion and use_small_branch:
+            self.fusion = CrossScaleAttention(
+                in_main=128, 
+                in_small=64,
+                use_attention=use_attention,
+                use_pos_encoding=use_pos_encoding
+            )
+            fusion_in_channels = 64
+        else:
+            # 如果不使用跨尺度融合或小目标分支，直接使用主分支特征
+            self.fusion = None
+            fusion_in_channels = 128
+        
+        # 构建检测头
+        self.head = nn.Sequential(
+            nn.Conv2d(fusion_in_channels, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, 3 * (5 + nc), 1)
+        )
+        
+        if use_teacher:
+            self.kl = nn.KLDivLoss(reduction='batchmean')
 
     def forward(self, x, teacher_feats=None, teacher_output=None):
         small_feat, p3, p4 = self.backbone(x)
-        fused = self.fusion(small_feat, p3)
+        
+        # 融合特征
+        if self.use_cross_scale_fusion and self.use_small_branch and self.fusion is not None:
+            fused = self.fusion(small_feat, p3)
+        else:
+            # 如果不使用融合，直接使用主分支特征
+            if small_feat.shape[2:] != p3.shape[2:]:
+                fused = F.interpolate(p3, size=small_feat.shape[2:], mode='nearest')
+            else:
+                fused = p3
+        
         out = self.head(fused)
 
         loss_feat, loss_output = 0.0, 0.0

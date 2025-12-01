@@ -74,12 +74,17 @@ class YOLO(Model):
         else:
             # Continue with default YOLO initialization
             super().__init__(model=model, task=task, verbose=verbose)
-            if hasattr(self.model, "model") and "RTDETR" in self.model.model[-1]._get_name():  # if RTDETR head
-                from ultralytics import RTDETR
+            # Check if model is a Sequential or has indexable model attribute
+            if hasattr(self.model, "model"):
+                model_model = self.model.model
+                # Check if it's indexable (Sequential, list, tuple) and has RTDETR head
+                if isinstance(model_model, (torch.nn.Sequential, list, tuple)) and len(model_model) > 0:
+                    if "RTDETR" in model_model[-1]._get_name():  # if RTDETR head
+                        from ultralytics import RTDETR
 
-                new_instance = RTDETR(self)
-                self.__class__ = type(new_instance)
-                self.__dict__ = new_instance.__dict__
+                        new_instance = RTDETR(self)
+                        self.__class__ = type(new_instance)
+                        self.__dict__ = new_instance.__dict__
 
     @property
     def task_map(self) -> dict[str, dict[str, Any]]:

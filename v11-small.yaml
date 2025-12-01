@@ -1,6 +1,15 @@
 # Parameters
 nc: 80   # number of classes
 
+# Ablation study configuration
+ablation:
+  use_teacher: false              # 是否使用知识蒸馏
+  use_small_branch: true          # 是否使用小目标分支
+  use_ghost: true                 # 是否使用Ghost模块
+  use_attention: true             # 是否使用注意力机制
+  use_pos_encoding: true          # 是否使用位置编码
+  use_cross_scale_fusion: true    # 是否使用跨尺度融合
+
 # Backbone
 backbone:
   - [custom, 1, YOLOv11SmallObjectDetector]

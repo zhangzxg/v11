@@ -1,0 +1,25 @@
+# 完整模型配置（所有架构改进点都开启）
+# Parameters
+nc: 80   # number of classes
+
+# Ablation study configuration
+ablation:
+  # 注意: use_teacher 是训练方式，不是架构改进点
+  # 默认关闭是因为需要预训练教师模型，如需使用请设置为 true
+  use_teacher: false              # 是否使用知识蒸馏 (false=关闭, true=开启)
+  
+  # 以下为架构改进点（全部开启）
+  use_small_branch: true          # ✅ 使用小目标分支
+  use_ghost: true                 # ✅ 使用Ghost模块
+  use_attention: true             # ✅ 使用注意力机制
+  use_pos_encoding: true          # ✅ 使用位置编码
+  use_cross_scale_fusion: true    # ✅ 使用跨尺度融合
+
+# Backbone
+backbone:
+  - [custom, 1, YOLOv11SmallObjectDetector]
+
+# Head (minimal head required for parsing)
+head:
+  - [-1, 1, Detect, [nc]]  # Detect layer
+

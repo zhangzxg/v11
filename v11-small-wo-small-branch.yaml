@@ -1,0 +1,21 @@
+# 消融实验：不使用小目标分支
+# Parameters
+nc: 80   # number of classes
+
+# Ablation study configuration
+ablation:
+  use_teacher: false
+  use_small_branch: false         # ❌ 关闭小目标分支
+  use_ghost: true
+  use_attention: true
+  use_pos_encoding: true
+  use_cross_scale_fusion: false   # 关闭小目标分支时，跨尺度融合也会关闭
+
+# Backbone
+backbone:
+  - [custom, 1, YOLOv11SmallObjectDetector]
+
+# Head
+head:
+  - [-1, 1, Detect, [nc]]
+
