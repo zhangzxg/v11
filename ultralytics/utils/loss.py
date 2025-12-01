@@ -209,10 +209,17 @@ class v8DetectionLoss:
             self.use_dfl = m.reg_max > 1
         else:
             # Handle custom models like YOLOv11SmallObjectDetector
-            # For custom models, use default values from model.yaml or args
-            from ultralytics.nn.modules import Detect
-            self.stride = torch.tensor([8.0, 16.0, 32.0], device=device)  # default strides
-            self.nc = getattr(model, 'nc', h.get('nc', 80))  # number of classes from model or args
+            # Try to get parameters from the custom model instance
+            if hasattr(model.model, 'nc'):
+                # Get nc from custom model
+                self.nc = model.model.nc
+                # Custom model uses strides [4.0, 8.0, 16.0] for P2/4, P3/8, P4/16
+                self.stride = torch.tensor([4.0, 8.0, 16.0], device=device)
+            else:
+                # Fallback to model.nc or args
+                self.nc = getattr(model, 'nc', h.get('nc', 80))
+                self.stride = torch.tensor([8.0, 16.0, 32.0], device=device)  # default strides
+            
             self.reg_max = 16  # default reg_max
             self.no = self.nc + self.reg_max * 4
             self.use_dfl = self.reg_max > 1
@@ -255,9 +262,52 @@ class v8DetectionLoss:
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
         loss = torch.zeros(3, device=self.device)  # box, cls, dfl
         feats = preds[1] if isinstance(preds, tuple) else preds
-        pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
-            (self.reg_max * 4, self.nc), 1
-        )
+        
+        # Ensure feats is a list
+        if not isinstance(feats, list):
+            feats = [feats]
+        
+        # Check and fix feature map channels if needed
+        # Each feature map should have shape (B, no, H, W) where no = nc + reg_max * 4
+        batch_size = feats[0].shape[0]
+        
+        # Debug: Print feature map shapes if they don't match expected no
+        for i, xi in enumerate(feats):
+            if xi.shape[1] != self.no:
+                # Feature map channels don't match expected no
+                # This can happen if the model output doesn't match the loss function's expectations
+                raise RuntimeError(
+                    f"Feature map {i} shape mismatch: got {xi.shape}, expected channels={self.no} "
+                    f"(nc={self.nc}, reg_max={self.reg_max}, no={self.no}). "
+                    f"Total elements: {xi.numel()}, batch_size: {batch_size}. "
+                    f"Please check that model head outputs {self.no} channels per feature map."
+                )
+        
+        # Reshape each feature map to (B, no, H*W) and concatenate along spatial dimension
+        # Verify that each feature map can be reshaped correctly
+        reshaped_feats = []
+        for i, xi in enumerate(feats):
+            # Verify shape: (B, C, H, W) where C should equal self.no
+            if len(xi.shape) != 4:
+                raise RuntimeError(
+                    f"Feature map {i} has unexpected shape {xi.shape}, expected 4D tensor (B, C, H, W)"
+                )
+            B, C, H, W = xi.shape
+            if C != self.no:
+                raise RuntimeError(
+                    f"Feature map {i} has {C} channels, but expected {self.no} "
+                    f"(nc={self.nc}, reg_max={self.reg_max}). Shape: {xi.shape}"
+                )
+            if B != batch_size:
+                raise RuntimeError(
+                    f"Feature map {i} batch size {B} doesn't match expected {batch_size}"
+                )
+            # Reshape to (B, no, H*W)
+            reshaped_feats.append(xi.view(B, self.no, -1))
+        
+        # Concatenate along spatial dimension (dim=2)
+        x_cat = torch.cat(reshaped_feats, 2)
+        pred_distri, pred_scores = x_cat.split((self.reg_max * 4, self.nc), 1)
 
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
