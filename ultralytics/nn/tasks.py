@@ -201,7 +201,10 @@ class BaseModel(torch.nn.Module):
                     box, cls = x_cat.split((reg_max * 4, nc), 1)
                     
                     # Decode boxes using DFL and dist2bbox
-                    dfl = DFL(reg_max)
+                    # Create DFL module and ensure it matches input dtype
+                    dfl = DFL(reg_max).to(device=box.device, dtype=box.dtype)
+                    
+                    # Apply DFL and decode boxes
                     dbox = dist2bbox(dfl(box), anchors.unsqueeze(0), xywh=True) * strides_tensor
                     
                     # Return concatenated predictions: (B, 4+nc, N)
