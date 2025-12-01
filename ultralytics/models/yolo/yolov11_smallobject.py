@@ -193,6 +193,7 @@ class YOLOv11SmallObjectDetector(nn.Module):
                  use_cross_scale_fusion=True, # 消融: 是否使用跨尺度融合
                  nc=80):                     # 类别数
         super().__init__()
+        self.nc = nc  # Store number of classes as instance attribute
         self.use_teacher = use_teacher
         self.use_small_branch = use_small_branch
         self.use_cross_scale_fusion = use_cross_scale_fusion

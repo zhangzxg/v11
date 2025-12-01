@@ -460,6 +460,11 @@ class DetectionModel(BaseModel):
                 use_cross_scale_fusion=use_cross_scale_fusion,
                 nc=model_nc
             )
+            # Set nc attribute for DetectionModel
+            self.nc = model_nc
+            # Ensure yaml has nc for compatibility
+            if "nc" not in self.yaml:
+                self.yaml["nc"] = model_nc
         else:
             if self.yaml["backbone"][0][2] == "Silence":
                 LOGGER.warning(
