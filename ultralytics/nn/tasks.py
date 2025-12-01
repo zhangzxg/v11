@@ -171,8 +171,44 @@ class BaseModel(torch.nn.Module):
                 result = self.model(x)
                 # Model now returns (outputs_list, loss_feat, loss_output) or just outputs_list
                 if isinstance(result, tuple):
-                    return result[0]  # Return the list of multi-scale outputs
-                return result  # Already a list of outputs
+                    outputs_list = result[0]  # Get the list of multi-scale outputs
+                else:
+                    outputs_list = result  # Already a list of outputs
+                
+                # Convert multi-scale feature maps to NMS format (similar to Detect._inference)
+                # Custom model has 3 scales: P2/4 (stride=4), P3/8 (stride=8), P4/16 (stride=16)
+                # Only convert to NMS format when model is in eval mode (for validation/prediction)
+                if not self.model.training:
+                    from ultralytics.nn.modules.block import DFL
+                    from ultralytics.utils.tal import dist2bbox, make_anchors
+                    
+                    # Get model parameters
+                    nc = self.model.nc
+                    reg_max = 16
+                    no = nc + reg_max * 4
+                    strides = torch.tensor([4.0, 8.0, 16.0], device=outputs_list[0].device)
+                    
+                    # Reshape and concatenate multi-scale outputs
+                    shape = outputs_list[0].shape  # BCHW
+                    x_cat = torch.cat([xi.view(shape[0], no, -1) for xi in outputs_list], 2)
+                    
+                    # Generate anchors and strides
+                    anchors, strides_tensor = make_anchors(outputs_list, strides, 0.5)
+                    anchors = anchors.transpose(0, 1)
+                    strides_tensor = strides_tensor.transpose(0, 1)
+                    
+                    # Split box and class predictions
+                    box, cls = x_cat.split((reg_max * 4, nc), 1)
+                    
+                    # Decode boxes using DFL and dist2bbox
+                    dfl = DFL(reg_max)
+                    dbox = dist2bbox(dfl(box), anchors.unsqueeze(0), xywh=True) * strides_tensor
+                    
+                    # Return concatenated predictions: (B, 4+nc, N)
+                    return torch.cat((dbox, cls.sigmoid()), 1)
+                else:
+                    # Training mode: return list of feature maps
+                    return outputs_list
         
         y, dt, embeddings = [], [], []  # outputs
         embed = frozenset(embed) if embed is not None else {-1}
