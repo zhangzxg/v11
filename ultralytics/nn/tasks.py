@@ -194,18 +194,28 @@ class BaseModel(torch.nn.Module):
                     
                     # Generate anchors and strides
                     anchors, strides_tensor = make_anchors(outputs_list, strides, 0.5)
-                    anchors = anchors.transpose(0, 1)
-                    strides_tensor = strides_tensor.transpose(0, 1)
+                    # anchors: (N, 2), strides_tensor: (N, 1)
+                    # Transpose to match Detect._inference format: (2, N) and (1, N)
+                    anchors = anchors.transpose(0, 1)  # (2, N)
+                    strides_tensor = strides_tensor.transpose(0, 1)  # (1, N)
                     
                     # Split box and class predictions
-                    box, cls = x_cat.split((reg_max * 4, nc), 1)
+                    box, cls = x_cat.split((reg_max * 4, nc), 1)  # box: (B, reg_max*4, N), cls: (B, nc, N)
                     
-                    # Decode boxes using DFL and dist2bbox
+                    # Decode boxes using DFL and dist2bbox (same as Detect._inference)
                     # Create DFL module and ensure it matches input dtype
                     dfl = DFL(reg_max).to(device=box.device, dtype=box.dtype)
                     
-                    # Apply DFL and decode boxes
-                    dbox = dist2bbox(dfl(box), anchors.unsqueeze(0), xywh=True) * strides_tensor
+                    # Apply DFL: (B, reg_max*4, N) -> (B, 4, N)
+                    dfl_output = dfl(box)  # (B, 4, N)
+                    
+                    # Use decode_bboxes logic: dist2bbox with dim=1
+                    # anchors.unsqueeze(0): (2, N) -> (1, 2, N)
+                    # dist2bbox with dim=1 splits (B, 4, N) along dim=1 into two (B, 2, N)
+                    dbox = dist2bbox(dfl_output, anchors.unsqueeze(0), xywh=True, dim=1)  # (B, 4, N)
+                    
+                    # Multiply by strides: (B, 4, N) * (1, N) -> (B, 4, N)
+                    dbox = dbox * strides_tensor  # (B, 4, N) * (1, N) -> (B, 4, N)
                     
                     # Return concatenated predictions: (B, 4+nc, N)
                     return torch.cat((dbox, cls.sigmoid()), 1)
