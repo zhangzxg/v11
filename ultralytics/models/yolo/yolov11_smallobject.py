@@ -240,22 +240,24 @@ class YOLOv11SmallObjectDetector(nn.Module):
         # 检测头3: 用于 P4/16 尺度 (p4, 低分辨率)
         head3_in_channels = 256  # p4
         
+        # 优化检测头以减少内存占用
+        # 使用更小的中间通道数，特别是对于高分辨率的 head1
         self.head1 = nn.Sequential(
-            nn.Conv2d(head1_in_channels, 128, 3, padding=1),
+            nn.Conv2d(head1_in_channels, 64, 3, padding=1),  # 减小到64通道
+            nn.ReLU(),
+            nn.Conv2d(64, no, 1)  # (nc + reg_max * 4)
+        )
+        
+        self.head2 = nn.Sequential(
+            nn.Conv2d(head2_in_channels, 128, 3, padding=1),  # 减小到128通道
             nn.ReLU(),
             nn.Conv2d(128, no, 1)  # (nc + reg_max * 4)
         )
         
-        self.head2 = nn.Sequential(
-            nn.Conv2d(head2_in_channels, 256, 3, padding=1),
+        self.head3 = nn.Sequential(
+            nn.Conv2d(head3_in_channels, 256, 3, padding=1),  # 减小到256通道
             nn.ReLU(),
             nn.Conv2d(256, no, 1)  # (nc + reg_max * 4)
-        )
-        
-        self.head3 = nn.Sequential(
-            nn.Conv2d(head3_in_channels, 512, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(512, no, 1)  # (nc + reg_max * 4)
         )
         
         if use_teacher:
