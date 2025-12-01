@@ -217,11 +217,45 @@ class YOLOv11SmallObjectDetector(nn.Module):
             self.fusion = None
             fusion_in_channels = 128
         
-        # 构建检测头
-        self.head = nn.Sequential(
-            nn.Conv2d(fusion_in_channels, 128, 3, padding=1),
+        # 构建多尺度检测头
+        # 标准 YOLO 使用 3 个尺度: P3/8, P4/16, P5/32
+        # 我们使用: P2/4 (small_feat), P3/8 (p3), P4/16 (p4)
+        reg_max = 16  # DFL channels
+        no = nc + reg_max * 4  # number of outputs per anchor
+        
+        # 检测头1: 用于 P2/4 尺度 (small_feat, 高分辨率，用于小目标)
+        if use_cross_scale_fusion and use_small_branch:
+            head1_in_channels = 64  # fused feature from small branch
+        else:
+            if use_small_branch:
+                head1_in_channels = 64  # small_feat
+            else:
+                # 如果没有小目标分支，需要从 p3 适配
+                head1_in_channels = 128  # p3 channels, will be adapted to 64
+                self.p2_adapter = nn.Conv2d(128, 64, 1)  # Adapter for p3 to p2 scale
+        
+        # 检测头2: 用于 P3/8 尺度 (p3, 中等分辨率)
+        head2_in_channels = 128  # p3
+        
+        # 检测头3: 用于 P4/16 尺度 (p4, 低分辨率)
+        head3_in_channels = 256  # p4
+        
+        self.head1 = nn.Sequential(
+            nn.Conv2d(head1_in_channels, 128, 3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(128, 3 * (5 + nc), 1)
+            nn.Conv2d(128, no, 1)  # (nc + reg_max * 4)
+        )
+        
+        self.head2 = nn.Sequential(
+            nn.Conv2d(head2_in_channels, 256, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(256, no, 1)  # (nc + reg_max * 4)
+        )
+        
+        self.head3 = nn.Sequential(
+            nn.Conv2d(head3_in_channels, 512, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(512, no, 1)  # (nc + reg_max * 4)
         )
         
         if use_teacher:
@@ -230,27 +264,49 @@ class YOLOv11SmallObjectDetector(nn.Module):
     def forward(self, x, teacher_feats=None, teacher_output=None):
         small_feat, p3, p4 = self.backbone(x)
         
-        # 融合特征
+        # 生成多尺度检测输出
+        # 尺度1: P2/4 (small_feat 或融合特征) - 高分辨率，用于小目标检测
         if self.use_cross_scale_fusion and self.use_small_branch and self.fusion is not None:
-            fused = self.fusion(small_feat, p3)
+            fused_p2 = self.fusion(small_feat, p3)
+            out1 = self.head1(fused_p2)  # P2/4 scale
         else:
-            # 如果不使用融合，直接使用主分支特征
-            if small_feat.shape[2:] != p3.shape[2:]:
-                fused = F.interpolate(p3, size=small_feat.shape[2:], mode='nearest')
+            # 如果不使用融合，使用 small_feat 或 p3 的适配
+            if self.use_small_branch:
+                # 使用 small_feat (已经是 64 通道)
+                out1 = self.head1(small_feat)
             else:
-                fused = p3
+                # 如果没有小目标分支，使用 p3 并适配到 P2 尺度
+                # 上采样 p3 到更高分辨率 (P2/4 尺度)
+                # p3 是 P3/8，需要上采样到 P2/4 (2倍上采样)
+                p3_up = F.interpolate(p3, scale_factor=2, mode='nearest')
+                # 适配通道数从 128 到 64
+                p3_adapted = self.p2_adapter(p3_up)
+                out1 = self.head1(p3_adapted)
         
-        out = self.head(fused)
+        # 尺度2: P3/8 (p3) - 中等分辨率
+        out2 = self.head2(p3)  # P3/8 scale
+        
+        # 尺度3: P4/16 (p4) - 低分辨率
+        out3 = self.head3(p4)  # P4/16 scale
+        
+        # 返回多尺度特征图列表 (对应标准 YOLO 的 P3, P4, P5)
+        outputs = [out1, out2, out3]
 
         loss_feat, loss_output = 0.0, 0.0
         if self.use_teacher:
             if teacher_feats is not None:
                 loss_feat = F.mse_loss(p3, teacher_feats[0]) + F.mse_loss(p4, teacher_feats[1])
             if teacher_output is not None:
-                s_logits = out.view(out.size(0), out.size(1), -1).permute(0, 2, 1)
-                t_logits = teacher_output.view(out.size(0), out.size(1), -1).permute(0, 2, 1).detach()
+                # 对于多尺度输出，使用第一个尺度进行蒸馏
+                s_logits = outputs[0].view(outputs[0].size(0), outputs[0].size(1), -1).permute(0, 2, 1)
+                t_logits = teacher_output.view(teacher_output.size(0), teacher_output.size(1), -1).permute(0, 2, 1).detach()
                 loss_output = self.kl(F.log_softmax(s_logits, dim=-1), F.softmax(t_logits, dim=-1))
-        return out, loss_feat, loss_output
+        
+        # 返回多尺度输出列表，与标准 YOLO 格式一致
+        if self.use_teacher:
+            return outputs, loss_feat, loss_output
+        else:
+            return outputs
 
 if __name__ == '__main__':
     model = YOLOv11SmallObjectDetector(use_teacher=True)

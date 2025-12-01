@@ -169,8 +169,10 @@ class BaseModel(torch.nn.Module):
         if not isinstance(self.model, torch.nn.Sequential) and hasattr(self.model, '__class__'):
             if self.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
                 result = self.model(x)
-                # Return only the first output (prediction tensor), ignore loss_feat and loss_output
-                return result[0] if isinstance(result, tuple) else result
+                # Model now returns (outputs_list, loss_feat, loss_output) or just outputs_list
+                if isinstance(result, tuple):
+                    return result[0]  # Return the list of multi-scale outputs
+                return result  # Already a list of outputs
         
         y, dt, embeddings = [], [], []  # outputs
         embed = frozenset(embed) if embed is not None else {-1}
@@ -340,19 +342,16 @@ class BaseModel(torch.nn.Module):
             preds = self.forward(batch["img"])
         
         # Handle custom models like YOLOv11SmallObjectDetector
-        # Convert single tensor output to list format expected by loss function
         if not isinstance(self.model, (nn.Sequential, list, tuple)):
             if hasattr(self.model, '__class__') and self.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
-                # Custom model returns (out, loss_feat, loss_output) or just out
+                # Custom model now returns list of multi-scale outputs
+                # Format: (outputs, loss_feat, loss_output) or just outputs
                 if isinstance(preds, tuple):
-                    preds = preds[0]  # Take only the prediction tensor
-                # Convert single tensor to list format (expected by loss function)
-                if isinstance(preds, torch.Tensor):
-                    # For YOLOv11SmallObjectDetector, output is (batch, 3*(5+nc), H, W)
-                    # We need to split it into 3 feature maps (P3, P4, P5 equivalent)
-                    # For simplicity, we'll use the same output for all 3 scales
-                    # This is a workaround - ideally the model should output multiple scales
-                    preds = [preds, preds, preds]  # Use same output for all scales
+                    preds = preds[0]  # Take only the prediction list, ignore loss_feat and loss_output
+                # preds should already be a list of 3 feature maps now
+                if not isinstance(preds, list):
+                    # Fallback: if somehow it's still a tensor, convert to list
+                    preds = [preds, preds, preds]
         
         return self.criterion(preds, batch)
 
