@@ -10,7 +10,7 @@ if __name__ == '__main__':
     model = YOLO('v11-small-full.yaml') # YOLO11 完整模型（所有改进点）
     # model.load('yolo11n.pt') # loading pretrain weights
     model.train(
-	data='/root/autodl-tmp/v11/v11-tr/v11-data.yaml',
+	data='/root/autodl-tmp/v11/v11-data.yaml',
                 cache=False,
                 imgsz=640,
                 epochs=200,
