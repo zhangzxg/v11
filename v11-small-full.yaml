@@ -1,6 +1,8 @@
 # 完整模型配置（所有架构改进点都开启）
 # Parameters
-nc: 80   # number of classes
+# 注意: nc 会在训练时从数据集 YAML 文件中自动获取，这里只是一个占位符
+# 实际训练时会使用 data.yaml 中的 nc 值（例如 v11-data.yaml 中的 nc: 10）
+nc: 10  # number of classes (placeholder, will be overridden by dataset nc during training)
 
 # Ablation study configuration
 ablation:
