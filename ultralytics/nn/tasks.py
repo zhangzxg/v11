@@ -433,7 +433,7 @@ class DetectionModel(BaseModel):
 
     Examples:
         Initialize a detection model
-        >>> model = DetectionModel("yolo11n.yaml", ch=3, nc=80)
+        >>> model = DetectionModel("yolo11n.yaml", ch=3, nc=10)
         >>> results = model.predict(image_tensor)
     """
 
@@ -443,7 +443,19 @@ class DetectionModel(BaseModel):
 
         if cfg == 'yolov11_smallobject':
             from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
-            self.model = YOLOv11SmallObjectDetector(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+            # Get nc from parameter or YAML
+            model_nc = nc if nc is not None else (self.yaml.get("nc", 10) if isinstance(self.yaml, dict) else 10)
+            # Get ablation config from YAML if available
+            ablation_config = self.yaml.get("ablation", {}) if isinstance(self.yaml, dict) else {}
+            self.model = YOLOv11SmallObjectDetector(
+                use_teacher=ablation_config.get("use_teacher", False),
+                use_small_branch=ablation_config.get("use_small_branch", True),
+                use_ghost=ablation_config.get("use_ghost", True),
+                use_attention=ablation_config.get("use_attention", True),
+                use_pos_encoding=ablation_config.get("use_pos_encoding", True),
+                use_cross_scale_fusion=ablation_config.get("use_cross_scale_fusion", True),
+                nc=model_nc
+            )
         elif (isinstance(self.yaml, dict) and 
               "backbone" in self.yaml and 
               len(self.yaml["backbone"]) > 0 and 
@@ -462,12 +474,31 @@ class DetectionModel(BaseModel):
             use_cross_scale_fusion = ablation_config.get("use_cross_scale_fusion", True)
             
             # 获取类别数
-            # Priority: 1) nc parameter, 2) yaml nc, 3) default 80
-            model_nc = nc if nc is not None else self.yaml.get("nc", 80)
+            # Priority: 1) nc parameter (always override YAML), 2) yaml nc
+            # IMPORTANT: For custom models, nc MUST be explicitly provided or correctly read from YAML
+            # If nc is None, try to get from YAML, but this should be fixed in setup_model during training
+            if nc is not None:
+                model_nc = nc
+                # Also update YAML dict to ensure consistency
+                if isinstance(self.yaml, dict):
+                    self.yaml['nc'] = nc
+            else:
+                # Get from YAML, but warn if not found or if value seems wrong
+                yaml_nc = self.yaml.get("nc") if isinstance(self.yaml, dict) else None
+                if yaml_nc is None:
+                    # This will be fixed in setup_model, but log a warning
+                    model_nc = 10  # Temporary default, will be overridden in setup_model
+                    LOGGER.warning(
+                        f"DetectionModel: nc not provided and not found in YAML. "
+                        f"Using temporary default nc={model_nc}. "
+                        f"This should be fixed in setup_model when dataset is loaded."
+                    )
+                else:
+                    model_nc = yaml_nc
             
             # Always log which nc value is being used (important for debugging)
             if nc is not None:
-                LOGGER.info(f"DetectionModel: Using nc={nc} from parameter (overriding YAML nc={self.yaml.get('nc', 80)})")
+                LOGGER.info(f"DetectionModel: Using nc={nc} from parameter (overriding YAML nc={self.yaml.get('nc') if isinstance(self.yaml, dict) else None})")
             else:
                 LOGGER.info(f"DetectionModel: Using nc={model_nc} from YAML file (nc parameter was None)")
             

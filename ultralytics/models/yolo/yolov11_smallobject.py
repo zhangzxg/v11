@@ -191,8 +191,16 @@ class YOLOv11SmallObjectDetector(nn.Module):
                  use_attention=True,         # 消融: 是否使用注意力机制
                  use_pos_encoding=True,      # 消融: 是否使用位置编码
                  use_cross_scale_fusion=True, # 消融: 是否使用跨尺度融合
-                 nc=80):                     # 类别数
+                 nc=None):                  # 类别数 (必须显式传递，不能使用默认值)
         super().__init__()
+        
+        # nc must be explicitly provided, cannot be None
+        if nc is None:
+            raise ValueError(
+                "YOLOv11SmallObjectDetector: nc (number of classes) must be explicitly provided. "
+                "Please ensure nc is passed from DetectionModel.__init__ or set in YAML config."
+            )
+        
         self.nc = nc  # Store number of classes as instance attribute
         
         # Log the nc value being used (important for debugging)
@@ -336,7 +344,7 @@ class YOLOv11SmallObjectDetector(nn.Module):
             return outputs
 
 if __name__ == '__main__':
-    model = YOLOv11SmallObjectDetector(use_teacher=True)
+    model = YOLOv11SmallObjectDetector(use_teacher=True, nc=80)  # Test with nc=80
     dummy_input = torch.randn(1, 3, 640, 640)
     teacher_feats = [torch.randn(1, 128, 80, 80), torch.randn(1, 256, 40, 40)]
     teacher_out = torch.randn(1, 255, 80, 80)

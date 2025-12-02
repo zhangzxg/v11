@@ -665,43 +665,45 @@ class BaseTrainer:
         """
         if isinstance(self.model, torch.nn.Module):  # if model is loaded beforehand. No setup needed
             # Model was already created in YOLO.__init__, but we need to ensure it uses correct nc from dataset
-            # For custom models, we may need to recreate the model with correct nc
+            # For custom models, ALWAYS recreate with correct nc from dataset (since YOLO.__init__ doesn't know nc yet)
             if hasattr(self.model, 'model') and hasattr(self.model.model, '__class__'):
                 if self.model.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
-                    # Check if model nc matches dataset nc
-                    if hasattr(self.model.model, 'nc') and hasattr(self, 'data') and 'nc' in self.data:
-                        # Check head output channels to verify nc is correct
-                        head1_channels = self.model.model.head1[-1].out_channels if hasattr(self.model.model, 'head1') else None
+                    # Always recreate custom model with correct nc from dataset
+                    if hasattr(self, 'data') and 'nc' in self.data:
+                        # Get original config
+                        cfg = self.args.model if hasattr(self.args, 'model') and self.args.model else None
+                        if cfg is None:
+                            # Fallback: use YAML dict but update nc
+                            if hasattr(self.model, 'yaml') and isinstance(self.model.yaml, dict):
+                                cfg = self.model.yaml.copy()
+                                cfg['nc'] = self.data["nc"]  # Force update nc in dict
+                            elif hasattr(self.model, 'yaml') and isinstance(self.model.yaml, str):
+                                cfg = self.model.yaml
+                            else:
+                                raise RuntimeError("Cannot determine model config for recreation")
+                        
+                        # Check current model state before recreation
+                        current_nc = getattr(self.model.model, 'nc', None)
+                        head1_channels = None
+                        if hasattr(self.model.model, 'head1') and len(self.model.model.head1) > 0:
+                            head1_channels = self.model.model.head1[-1].out_channels
                         expected_channels = self.data["nc"] + 16 * 4  # nc + reg_max * 4
                         
-                        if self.model.model.nc != self.data["nc"] or (head1_channels and head1_channels != expected_channels):
-                            LOGGER.warning(
-                                f"Model was initialized with nc={self.model.model.nc}, head channels={head1_channels}, "
-                                f"but dataset has nc={self.data['nc']}, expected channels={expected_channels}. "
-                                f"Recreating model with correct nc from dataset."
-                            )
-                            # Recreate model with correct nc (no weights to avoid overriding head)
-                            # Use the original YAML file path, not the dict (which may have old nc value)
-                            cfg = self.args.model if hasattr(self.args, 'model') else (self.model.yaml if isinstance(self.model.yaml, str) else None)
-                            if cfg is None:
-                                # Fallback: use YAML dict but update nc
-                                if hasattr(self.model, 'yaml') and isinstance(self.model.yaml, dict):
-                                    cfg = self.model.yaml.copy()
-                                    cfg['nc'] = self.data["nc"]  # Force update nc in dict
-                                else:
-                                    raise RuntimeError("Cannot determine model config for recreation")
-                            
-                            self.model = self.get_model(cfg=cfg, weights=None, verbose=RANK == -1)
-                            # Verify the new model has correct channels
-                            if hasattr(self.model.model, 'head1'):
-                                new_head1_channels = self.model.model.head1[-1].out_channels
-                                if new_head1_channels != expected_channels:
-                                    raise RuntimeError(
-                                        f"Failed to recreate model with correct nc. "
-                                        f"New model head1 channels={new_head1_channels}, expected={expected_channels}. "
-                                        f"Model nc={self.model.model.nc}, dataset nc={self.data['nc']}. "
-                                        f"Please check model initialization."
-                                    )
+                        # ALWAYS recreate to ensure correct nc (model was created before dataset was loaded)
+                        # Force recreate model with correct nc (no weights to avoid overriding head)
+                        self.model = self.get_model(cfg=cfg, weights=None, verbose=RANK == -1)
+                        
+                        # Verify the new model has correct channels
+                        if hasattr(self.model.model, 'head1') and len(self.model.model.head1) > 0:
+                            new_head1_channels = self.model.model.head1[-1].out_channels
+                            new_nc = getattr(self.model.model, 'nc', None)
+                            if new_head1_channels != expected_channels or new_nc != self.data["nc"]:
+                                raise RuntimeError(
+                                    f"Failed to recreate model with correct nc. "
+                                    f"New model head1 channels={new_head1_channels}, expected={expected_channels}. "
+                                    f"Model nc={new_nc}, dataset nc={self.data['nc']}. "
+                                    f"Please check model initialization and ensure YAML nc matches dataset nc."
+                                )
             return
 
         cfg, weights = self.model, None
