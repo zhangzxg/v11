@@ -316,20 +316,44 @@ class YOLOv11SmallObjectDetector(nn.Module):
         # 尺度3: P4/16 (p4) - 低分辨率
         out3 = self.head3(p4)  # P4/16 scale
         
-        # 验证输出通道数是否正确
+        # 验证输出通道数是否正确（必须在所有情况下都执行）
         reg_max = 16
         expected_channels = self.nc + reg_max * 4
+        
+        # 检查 head 的实际输出通道数
+        actual_head1_channels = self.head1[-1].out_channels
+        actual_head2_channels = self.head2[-1].out_channels
+        actual_head3_channels = self.head3[-1].out_channels
+        
+        if actual_head1_channels != expected_channels or actual_head2_channels != expected_channels or actual_head3_channels != expected_channels:
+            from ultralytics.utils import LOGGER
+            LOGGER.error(
+                f"YOLOv11SmallObjectDetector: Head output channels mismatch detected in forward! "
+                f"head1: {actual_head1_channels}, head2: {actual_head2_channels}, head3: {actual_head3_channels}, "
+                f"expected: {expected_channels} (nc={self.nc}, reg_max={reg_max}). "
+                f"This indicates head weights were loaded from a model with different nc!"
+            )
+            raise RuntimeError(
+                f"Head output channels mismatch: head1={actual_head1_channels}, head2={actual_head2_channels}, "
+                f"head3={actual_head3_channels}, expected={expected_channels}. "
+                f"Model nc={self.nc}, but head was initialized with different nc. "
+                f"Please ensure no weights are loaded that would override head channels."
+            )
+        
+        # 验证实际输出的通道数
         for i, out in enumerate([out1, out2, out3]):
             if out.shape[1] != expected_channels:
                 from ultralytics.utils import LOGGER
                 LOGGER.error(
                     f"YOLOv11SmallObjectDetector: Feature map {i} has {out.shape[1]} channels, "
                     f"but expected {expected_channels} (nc={self.nc}, reg_max={reg_max}). "
-                    f"Model was initialized with wrong nc value!"
+                    f"Head output channels: head1={actual_head1_channels}, head2={actual_head2_channels}, head3={actual_head3_channels}"
                 )
                 raise RuntimeError(
                     f"Model head output channels mismatch: got {out.shape[1]}, expected {expected_channels}. "
-                    f"Please ensure model is initialized with nc={self.nc}."
+                    f"Model nc={self.nc}, head output channels: head1={actual_head1_channels}, "
+                    f"head2={actual_head2_channels}, head3={actual_head3_channels}. "
+                    f"Please ensure model is initialized with nc={self.nc} and no weights override head channels."
                 )
         
         # 返回多尺度特征图列表 (对应标准 YOLO 的 P3, P4, P5)
