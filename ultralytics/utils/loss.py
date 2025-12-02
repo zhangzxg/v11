@@ -193,51 +193,105 @@ class KeypointLoss(nn.Module):
 
 
 class v8DetectionLoss:
-    """Criterion class for computing training losses for YOLOv8 object detection."""
+    """Criterion class for computing training losses for YOLOv8/YOLOv11 object detection."""
 
     def __init__(self, model, tal_topk: int = 10):  # model must be de-paralleled
         """Initialize v8DetectionLoss with model parameters and task-aligned assignment settings."""
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
 
-        # Check if model is indexable (Sequential, list, tuple) or custom model
+        self.device = device
+        self.hyp = h
+        self.bce = nn.BCEWithLogitsLoss(reduction="none")
+
+        # 是否是“动态推断 head 结构”的自定义模型
+        self._dyn_head = False
+
+        # -------- 1. 标准 Detect() 模型（官方 YOLOv8/11） --------
         if isinstance(model.model, (nn.Sequential, list, tuple)) and len(model.model) > 0:
             m = model.model[-1]  # Detect() module
             self.stride = m.stride  # model strides
             self.nc = m.nc  # number of classes
-            self.no = m.nc + m.reg_max * 4
             self.reg_max = m.reg_max
-            self.use_dfl = m.reg_max > 1
-        else:
-            # Handle custom models like YOLOv11SmallObjectDetector
-            # Priority: 1) model.model.nc (from custom model instance), 2) model.nc (from DetectionModel), 3) args, 4) default 80
-            if hasattr(model.model, 'nc'):
-                # Get nc from custom model instance (most reliable)
-                self.nc = model.model.nc
-            elif hasattr(model, 'nc'):
-                # Get nc from DetectionModel
-                self.nc = model.nc
-            else:
-                # Fallback to args or default
-                self.nc = h.get('nc', 80) if h else 80
-            
-            # Custom model uses strides [4.0, 8.0, 16.0] for P2/4, P3/8, P4/16
-            self.stride = torch.tensor([4.0, 8.0, 16.0], device=device)
-            
-            self.reg_max = 16  # default reg_max
             self.no = self.nc + self.reg_max * 4
             self.use_dfl = self.reg_max > 1
-            
-            # Log the nc value being used for debugging
-            LOGGER.info(f"v8DetectionLoss initialized with nc={self.nc}, no={self.no} (reg_max={self.reg_max})")
-        
-        self.bce = nn.BCEWithLogitsLoss(reduction="none")
-        self.hyp = h
-        self.device = device
 
+        # -------- 2. 自定义模型（例如 YOLOv11SmallObjectDetector） --------
+        else:
+            # 优先从自定义模型实例上拿 nc
+            if hasattr(model.model, "nc"):
+                self.nc = model.model.nc
+            elif hasattr(model, "nc"):
+                self.nc = model.nc
+            else:
+                self.nc = h.get("nc", 80) if h else 80
+
+            # stride：尽量从模型本身拿；没有就默认 P2/P3/P4
+            if hasattr(model, "stride"):
+                self.stride = model.stride
+            else:
+                self.stride = torch.tensor([4.0, 8.0, 16.0], device=device)
+
+            # 先不假设 reg_max 和 no，等第一次 forward 时根据特征图自动推断
+            self.reg_max = None
+            self.no = None
+            self.use_dfl = False
+            self._dyn_head = True
+
+            LOGGER.info(
+                f"[v8DetectionLoss] Custom model detected, lazy-infer head layout with nc={self.nc}, stride={self.stride}"
+            )
+
+        # assigner / bbox_loss / proj：对标准模型直接初始化，自定义模型延迟到第一次 forward 再初始化
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
-        self.bbox_loss = BboxLoss(self.reg_max).to(device)
-        self.proj = torch.arange(self.reg_max, dtype=torch.float, device=device)
+
+        if self._dyn_head:
+            self.bbox_loss = None
+            self.proj = None
+        else:
+            self.bbox_loss = BboxLoss(self.reg_max).to(device)
+            self.proj = torch.arange(self.reg_max, dtype=torch.float, device=device)
+
+    # -------- 动态从特征图推断 reg_max / no / use_dfl --------
+    def _init_from_feats(self, feats: list[torch.Tensor]) -> None:
+        """Lazy-init head layout for custom models based on first feature map."""
+        if self.no is not None:
+            return
+
+        c = feats[0].shape[1]  # 通道数
+        nc = self.nc
+
+        if c == nc + 4:
+            # 无 DFL：经典 4+nc 格式
+            reg_max = 1
+        elif (c - nc) % 4 == 0 and (c - nc) > 0:
+            # DFL：nc + 4 * reg_max
+            reg_max = (c - nc) // 4
+        else:
+            raise RuntimeError(
+                f"[v8DetectionLoss] 无法从特征图推断 reg_max：got C={c}, nc={nc}，"
+                f"期望 C = nc + 4 或 C = nc + 4*k。请检查 head 输出通道数。"
+            )
+
+        self.reg_max = reg_max
+        self.no = c
+        self.use_dfl = reg_max > 1
+        self.bbox_loss = BboxLoss(self.reg_max).to(self.device)
+        self.proj = torch.arange(self.reg_max, dtype=torch.float, device=self.device)
+
+        LOGGER.info(
+            f"[v8DetectionLoss] Inferred head layout: nc={self.nc}, reg_max={self.reg_max}, "
+            f"no={self.no}, use_dfl={self.use_dfl}"
+        )
+
+    # -------- bbox 解码函数，兼容 DFL / 非 DFL --------
+    def bbox_decode(self, anchor_points: torch.Tensor, pred_dist: torch.Tensor) -> torch.Tensor:
+        """Decode predicted object bounding box coordinates from anchor points and distribution."""
+        if self.use_dfl and self.reg_max is not None and self.reg_max > 1:
+            b, a, c = pred_dist.shape  # batch, anchors, channels
+            pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(self.proj.type(pred_dist.dtype))
+        # 非 DFL 时，pred_dist 直接视为 l,t,r,b
+        return dist2bbox(pred_dist, anchor_points, xywh=False)
 
     def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor) -> torch.Tensor:
         """Preprocess targets by converting to tensor format and scaling coordinates."""
@@ -256,45 +310,26 @@ class v8DetectionLoss:
             out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor))
         return out
 
-    def bbox_decode(self, anchor_points: torch.Tensor, pred_dist: torch.Tensor) -> torch.Tensor:
-        """Decode predicted object bounding box coordinates from anchor points and distribution."""
-        if self.use_dfl:
-            b, a, c = pred_dist.shape  # batch, anchors, channels
-            pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(self.proj.type(pred_dist.dtype))
-            # pred_dist = pred_dist.view(b, a, c // 4, 4).transpose(2,3).softmax(3).matmul(self.proj.type(pred_dist.dtype))
-            # pred_dist = (pred_dist.view(b, a, c // 4, 4).softmax(2) * self.proj.type(pred_dist.dtype).view(1, 1, -1, 1)).sum(2)
-        return dist2bbox(pred_dist, anchor_points, xywh=False)
-
     def __call__(self, preds: Any, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
         loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+
+        # preds 可能是 (losses, feats) 或直接 feats
         feats = preds[1] if isinstance(preds, tuple) else preds
-        
+
         # Ensure feats is a list
         if not isinstance(feats, list):
             feats = [feats]
-        
-        # Check and fix feature map channels if needed
-        # Each feature map should have shape (B, no, H, W) where no = nc + reg_max * 4
+
         batch_size = feats[0].shape[0]
-        
-        # Debug: Print feature map shapes if they don't match expected no
-        for i, xi in enumerate(feats):
-            if xi.shape[1] != self.no:
-                # Feature map channels don't match expected no
-                # This can happen if the model output doesn't match the loss function's expectations
-                raise RuntimeError(
-                    f"Feature map {i} shape mismatch: got {xi.shape}, expected channels={self.no} "
-                    f"(nc={self.nc}, reg_max={self.reg_max}, no={self.no}). "
-                    f"Total elements: {xi.numel()}, batch_size: {batch_size}. "
-                    f"Please check that model head outputs {self.no} channels per feature map."
-                )
-        
-        # Reshape each feature map to (B, no, H*W) and concatenate along spatial dimension
-        # Verify that each feature map can be reshaped correctly
+
+        # ---- 自定义模型：第一次 forward 时，从特征图推断 reg_max / no / use_dfl ----
+        if self._dyn_head and (self.no is None or self.reg_max is None):
+            self._init_from_feats(feats)
+
+        # 检查并 reshape 每层特征图 (B, no, H, W) -> (B, no, H*W)
         reshaped_feats = []
         for i, xi in enumerate(feats):
-            # Verify shape: (B, C, H, W) where C should equal self.no
             if len(xi.shape) != 4:
                 raise RuntimeError(
                     f"Feature map {i} has unexpected shape {xi.shape}, expected 4D tensor (B, C, H, W)"
@@ -302,25 +337,26 @@ class v8DetectionLoss:
             B, C, H, W = xi.shape
             if C != self.no:
                 raise RuntimeError(
-                    f"Feature map {i} has {C} channels, but expected {self.no} "
-                    f"(nc={self.nc}, reg_max={self.reg_max}). Shape: {xi.shape}"
+                    f"Feature map {i} shape mismatch: got {xi.shape}, expected channels={self.no} "
+                    f"(nc={self.nc}, reg_max={self.reg_max}, no={self.no}). "
+                    f"Please check that model head outputs {self.no} channels per feature map."
                 )
             if B != batch_size:
                 raise RuntimeError(
                     f"Feature map {i} batch size {B} doesn't match expected {batch_size}"
                 )
-            # Reshape to (B, no, H*W)
             reshaped_feats.append(xi.view(B, self.no, -1))
-        
+
         # Concatenate along spatial dimension (dim=2)
         x_cat = torch.cat(reshaped_feats, 2)
-        pred_distri, pred_scores = x_cat.split((self.reg_max * 4, self.nc), 1)
+        pred_distri, pred_scores = x_cat.split((self.reg_max * 4, self.nc), 1) if self.reg_max > 1 else x_cat.split(
+            (4, self.nc), 1
+        )
 
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
 
         dtype = pred_scores.dtype
-        batch_size = pred_scores.shape[0]
         imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
         anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
 
@@ -332,11 +368,8 @@ class v8DetectionLoss:
 
         # Pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
-        # dfl_conf = pred_distri.view(batch_size, -1, 4, self.reg_max).detach().softmax(-1)
-        # dfl_conf = (dfl_conf.amax(-1).mean(-1) + dfl_conf.amax(-1).amin(-1)) / 2
 
         _, target_bboxes, target_scores, fg_mask, _ = self.assigner(
-            # pred_scores.detach().sigmoid() * 0.8 + dfl_conf.unsqueeze(-1) * 0.2,
             pred_scores.detach().sigmoid(),
             (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
             anchor_points * stride_tensor,
@@ -348,10 +381,9 @@ class v8DetectionLoss:
         target_scores_sum = max(target_scores.sum(), 1)
 
         # Cls loss
-        # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
         loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
-        # Bbox loss
+        # Bbox + DFL loss
         if fg_mask.sum():
             loss[0], loss[2] = self.bbox_loss(
                 pred_distri,

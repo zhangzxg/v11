@@ -667,7 +667,8 @@ class BaseTrainer:
             # Model was already created in YOLO.__init__, but we need to ensure it uses correct nc from dataset
             # For custom models, ALWAYS recreate with correct nc from dataset (since YOLO.__init__ doesn't know nc yet)
             if hasattr(self.model, 'model') and hasattr(self.model.model, '__class__'):
-                if self.model.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
+                model_class_name = self.model.model.__class__.__name__
+                if model_class_name == "YOLOv11SmallObjectDetector":
                     # Always recreate custom model with correct nc from dataset
                     if hasattr(self, 'data') and 'nc' in self.data:
                         # Get original config
@@ -682,27 +683,30 @@ class BaseTrainer:
                             else:
                                 raise RuntimeError("Cannot determine model config for recreation")
                         
-                        # Check current model state before recreation
-                        current_nc = getattr(self.model.model, 'nc', None)
-                        head1_channels = None
-                        if hasattr(self.model.model, 'head1') and len(self.model.model.head1) > 0:
-                            head1_channels = self.model.model.head1[-1].out_channels
                         expected_channels = self.data["nc"] + 16 * 4  # nc + reg_max * 4
                         
                         # ALWAYS recreate to ensure correct nc (model was created before dataset was loaded)
                         # Force recreate model with correct nc (no weights to avoid overriding head)
                         self.model = self.get_model(cfg=cfg, weights=None, verbose=RANK == -1)
                         
-                        # Verify the new model has correct channels
+                        # Reinitialize loss function with new model
+                        if hasattr(self.model, 'init_criterion'):
+                            self.model.criterion = self.model.init_criterion()
+                        
+                        # Verify the new model has correct channels - CRITICAL CHECK
                         if hasattr(self.model.model, 'head1') and len(self.model.model.head1) > 0:
                             new_head1_channels = self.model.model.head1[-1].out_channels
                             new_nc = getattr(self.model.model, 'nc', None)
-                            if new_head1_channels != expected_channels or new_nc != self.data["nc"]:
+                            if new_head1_channels != expected_channels:
                                 raise RuntimeError(
-                                    f"Failed to recreate model with correct nc. "
-                                    f"New model head1 channels={new_head1_channels}, expected={expected_channels}. "
+                                    f"Model recreation failed: head1 channels={new_head1_channels}, expected={expected_channels}. "
                                     f"Model nc={new_nc}, dataset nc={self.data['nc']}. "
-                                    f"Please check model initialization and ensure YAML nc matches dataset nc."
+                                    f"This indicates the model was not recreated correctly."
+                                )
+                            if new_nc != self.data["nc"]:
+                                raise RuntimeError(
+                                    f"Model recreation failed: model nc={new_nc}, dataset nc={self.data['nc']}. "
+                                    f"This indicates the model was not recreated correctly."
                                 )
             return
 
