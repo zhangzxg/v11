@@ -462,7 +462,15 @@ class DetectionModel(BaseModel):
             use_cross_scale_fusion = ablation_config.get("use_cross_scale_fusion", True)
             
             # 获取类别数
+            # Priority: 1) nc parameter, 2) yaml nc, 3) default 80
             model_nc = nc if nc is not None else self.yaml.get("nc", 80)
+            
+            # Log which nc value is being used
+            if verbose:
+                if nc is not None:
+                    LOGGER.info(f"Using nc={nc} from parameter (overriding YAML nc={self.yaml.get('nc', 80)})")
+                else:
+                    LOGGER.info(f"Using nc={model_nc} from YAML file")
             
             self.model = YOLOv11SmallObjectDetector(
                 use_teacher=use_teacher,

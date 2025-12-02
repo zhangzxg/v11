@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ultralytics.utils import LOGGER
 from ultralytics.utils.metrics import OKS_SIGMA
 from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
@@ -209,20 +210,26 @@ class v8DetectionLoss:
             self.use_dfl = m.reg_max > 1
         else:
             # Handle custom models like YOLOv11SmallObjectDetector
-            # Try to get parameters from the custom model instance
+            # Priority: 1) model.model.nc (from custom model instance), 2) model.nc (from DetectionModel), 3) args, 4) default 80
             if hasattr(model.model, 'nc'):
-                # Get nc from custom model
+                # Get nc from custom model instance (most reliable)
                 self.nc = model.model.nc
-                # Custom model uses strides [4.0, 8.0, 16.0] for P2/4, P3/8, P4/16
-                self.stride = torch.tensor([4.0, 8.0, 16.0], device=device)
+            elif hasattr(model, 'nc'):
+                # Get nc from DetectionModel
+                self.nc = model.nc
             else:
-                # Fallback to model.nc or args
-                self.nc = getattr(model, 'nc', h.get('nc', 80))
-                self.stride = torch.tensor([8.0, 16.0, 32.0], device=device)  # default strides
+                # Fallback to args or default
+                self.nc = h.get('nc', 80) if h else 80
+            
+            # Custom model uses strides [4.0, 8.0, 16.0] for P2/4, P3/8, P4/16
+            self.stride = torch.tensor([4.0, 8.0, 16.0], device=device)
             
             self.reg_max = 16  # default reg_max
             self.no = self.nc + self.reg_max * 4
             self.use_dfl = self.reg_max > 1
+            
+            # Log the nc value being used for debugging
+            LOGGER.info(f"v8DetectionLoss initialized with nc={self.nc}, no={self.no} (reg_max={self.reg_max})")
         
         self.bce = nn.BCEWithLogitsLoss(reduction="none")
         self.hyp = h
