@@ -689,6 +689,10 @@ class BaseTrainer:
                         # Force recreate model with correct nc (no weights to avoid overriding head)
                         self.model = self.get_model(cfg=cfg, weights=None, verbose=RANK == -1)
                         
+                        # Set model.args for loss function initialization
+                        if not hasattr(self.model, 'args'):
+                            self.model.args = vars(self.args)
+                        
                         # Reinitialize loss function with new model
                         if hasattr(self.model, 'init_criterion'):
                             self.model.criterion = self.model.init_criterion()
