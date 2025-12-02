@@ -474,33 +474,16 @@ class DetectionModel(BaseModel):
             use_cross_scale_fusion = ablation_config.get("use_cross_scale_fusion", True)
             
             # 获取类别数
-            # Priority: 1) nc parameter (always override YAML), 2) yaml nc
-            # IMPORTANT: For custom models, nc MUST be explicitly provided or correctly read from YAML
-            # If nc is None, try to get from YAML, but this should be fixed in setup_model during training
+            # Priority: 1) nc parameter (ALWAYS override YAML), 2) yaml nc
+            # IMPORTANT: For custom models, nc parameter MUST override YAML to ensure correct head channels
             if nc is not None:
+                # nc parameter is provided, ALWAYS use it and update YAML
                 model_nc = nc
-                # Also update YAML dict to ensure consistency
                 if isinstance(self.yaml, dict):
-                    self.yaml['nc'] = nc
+                    self.yaml['nc'] = nc  # Force update YAML to match
             else:
-                # Get from YAML, but warn if not found or if value seems wrong
-                yaml_nc = self.yaml.get("nc") if isinstance(self.yaml, dict) else None
-                if yaml_nc is None:
-                    # This will be fixed in setup_model, but log a warning
-                    model_nc = 10  # Temporary default, will be overridden in setup_model
-                    LOGGER.warning(
-                        f"DetectionModel: nc not provided and not found in YAML. "
-                        f"Using temporary default nc={model_nc}. "
-                        f"This should be fixed in setup_model when dataset is loaded."
-                    )
-                else:
-                    model_nc = yaml_nc
-            
-            # Always log which nc value is being used (important for debugging)
-            if nc is not None:
-                LOGGER.info(f"DetectionModel: Using nc={nc} from parameter (overriding YAML nc={self.yaml.get('nc') if isinstance(self.yaml, dict) else None})")
-            else:
-                LOGGER.info(f"DetectionModel: Using nc={model_nc} from YAML file (nc parameter was None)")
+                # No nc parameter, get from YAML
+                model_nc = self.yaml.get("nc", 10) if isinstance(self.yaml, dict) else 10
             
             self.model = YOLOv11SmallObjectDetector(
                 use_teacher=use_teacher,

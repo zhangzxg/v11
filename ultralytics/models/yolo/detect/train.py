@@ -168,6 +168,26 @@ class DetectionTrainer(BaseTrainer):
         Returns:
             (DetectionModel): YOLO detection model.
         """
+        # For custom models, ensure YAML nc is updated before creating model
+        if cfg:
+            # Load YAML if it's a string path
+            if isinstance(cfg, str):
+                from ultralytics.nn.tasks import yaml_model_load
+                yaml_dict = yaml_model_load(cfg)
+            elif isinstance(cfg, dict):
+                yaml_dict = cfg
+            else:
+                yaml_dict = None
+            
+            # Check if it's a custom model
+            if isinstance(yaml_dict, dict) and "backbone" in yaml_dict:
+                backbone = yaml_dict.get("backbone", [])
+                if backbone and len(backbone) > 0 and len(backbone[0]) > 2:
+                    if backbone[0][2] == "YOLOv11SmallObjectDetector":
+                        # Force update nc in YAML dict to match dataset
+                        yaml_dict["nc"] = self.data["nc"]
+                        cfg = yaml_dict  # Use updated dict
+        
         model = DetectionModel(cfg, nc=self.data["nc"], ch=self.data["channels"], verbose=verbose and RANK == -1)
         if weights:
             model.load(weights)
