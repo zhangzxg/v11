@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
@@ -201,7 +202,13 @@ class v8DetectionLoss:
         h = getattr(model, 'args', {})  # hyperparameters (use empty dict if args not set)
 
         self.device = device
-        self.hyp = h
+        self.hyp = SimpleNamespace(**h) if isinstance(h, dict) else h
+        if self.hyp is None:
+            self.hyp = SimpleNamespace(box=1.0, cls=1.0, dfl=1.0)
+        else:
+            for name, default in (("box", 1.0), ("cls", 1.0), ("dfl", 1.0)):
+                if not hasattr(self.hyp, name):
+                    setattr(self.hyp, name, default)
         self.bce = nn.BCEWithLogitsLoss(reduction="none")
 
         # 是否是“动态推断 head 结构”的自定义模型
