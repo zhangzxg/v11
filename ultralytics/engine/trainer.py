@@ -693,7 +693,10 @@ class BaseTrainer:
                         if not hasattr(self.model, 'args'):
                             self.model.args = vars(self.args)
                         
-                        # Reinitialize loss function with new model
+                        # Move model to device before initializing loss function
+                        self.model = self.model.to(self.device)
+                        
+                        # Reinitialize loss function with new model (after model is on device)
                         if hasattr(self.model, 'init_criterion'):
                             self.model.criterion = self.model.init_criterion()
                         

@@ -243,7 +243,7 @@ class v8DetectionLoss:
             )
 
         # assigner / bbox_loss / proj：对标准模型直接初始化，自定义模型延迟到第一次 forward 再初始化
-        self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
+        self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0).to(device)
 
         if self._dyn_head:
             self.bbox_loss = None
