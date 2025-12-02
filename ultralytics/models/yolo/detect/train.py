@@ -142,6 +142,19 @@ class DetectionTrainer(BaseTrainer):
         self.model.nc = self.data["nc"]  # attach number of classes to model
         self.model.names = self.data["names"]  # attach class names to model
         self.model.args = self.args  # attach hyperparameters to model
+        
+        # For custom models, also update the model.model.nc attribute
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'nc'):
+            if self.model.model.nc != self.data["nc"]:
+                from ultralytics.utils import LOGGER
+                LOGGER.warning(
+                    f"Custom model has nc={self.model.model.nc}, but dataset has nc={self.data['nc']}. "
+                    f"Model head was initialized with nc={self.model.model.nc}, which may cause dimension mismatches. "
+                    f"Please ensure model is initialized with the correct nc from the dataset."
+                )
+                # Update the attribute (though this won't change the head's output channels)
+                self.model.model.nc = self.data["nc"]
+        
         # TODO: self.model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc
 
     def get_model(self, cfg: str | None = None, weights: str | None = None, verbose: bool = True):

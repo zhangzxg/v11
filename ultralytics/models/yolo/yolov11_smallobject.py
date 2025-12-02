@@ -194,6 +194,12 @@ class YOLOv11SmallObjectDetector(nn.Module):
                  nc=80):                     # 类别数
         super().__init__()
         self.nc = nc  # Store number of classes as instance attribute
+        
+        # Log the nc value being used (important for debugging)
+        from ultralytics.utils import LOGGER
+        reg_max = 16
+        no = nc + reg_max * 4
+        LOGGER.info(f"YOLOv11SmallObjectDetector: Initializing with nc={nc}, no={no} (reg_max={reg_max})")
         self.use_teacher = use_teacher
         self.use_small_branch = use_small_branch
         self.use_cross_scale_fusion = use_cross_scale_fusion

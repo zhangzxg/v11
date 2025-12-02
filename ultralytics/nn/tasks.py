@@ -465,12 +465,11 @@ class DetectionModel(BaseModel):
             # Priority: 1) nc parameter, 2) yaml nc, 3) default 80
             model_nc = nc if nc is not None else self.yaml.get("nc", 80)
             
-            # Log which nc value is being used
-            if verbose:
-                if nc is not None:
-                    LOGGER.info(f"Using nc={nc} from parameter (overriding YAML nc={self.yaml.get('nc', 80)})")
-                else:
-                    LOGGER.info(f"Using nc={model_nc} from YAML file")
+            # Always log which nc value is being used (important for debugging)
+            if nc is not None:
+                LOGGER.info(f"DetectionModel: Using nc={nc} from parameter (overriding YAML nc={self.yaml.get('nc', 80)})")
+            else:
+                LOGGER.info(f"DetectionModel: Using nc={model_nc} from YAML file (nc parameter was None)")
             
             self.model = YOLOv11SmallObjectDetector(
                 use_teacher=use_teacher,
@@ -483,6 +482,12 @@ class DetectionModel(BaseModel):
             )
             # Set nc attribute for DetectionModel
             self.nc = model_nc
+            # Verify that the custom model has the correct nc
+            if hasattr(self.model, 'nc') and self.model.nc != model_nc:
+                LOGGER.warning(
+                    f"Warning: Custom model has nc={self.model.nc}, but expected nc={model_nc}. "
+                    f"This may cause dimension mismatches in loss calculation."
+                )
             # Ensure yaml has nc for compatibility
             if "nc" not in self.yaml:
                 self.yaml["nc"] = model_nc
