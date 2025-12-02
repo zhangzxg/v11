@@ -289,8 +289,12 @@ class v8DetectionLoss:
         """Decode predicted object bounding box coordinates from anchor points and distribution."""
         if self.use_dfl and self.reg_max is not None and self.reg_max > 1:
             b, a, c = pred_dist.shape  # batch, anchors, channels
-            pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(self.proj.type(pred_dist.dtype))
+            # Ensure proj is on the same device as pred_dist
+            proj = self.proj.to(pred_dist.device).type(pred_dist.dtype)
+            pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(proj)
         # 非 DFL 时，pred_dist 直接视为 l,t,r,b
+        # dist2bbox expects distance shape (B, N, 4) and anchor_points shape (N, 2) when dim=-1
+        # pred_dist shape: (B, N, 4), anchor_points shape: (N, 2)
         return dist2bbox(pred_dist, anchor_points, xywh=False)
 
     def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor) -> torch.Tensor:
@@ -359,6 +363,21 @@ class v8DetectionLoss:
         dtype = pred_scores.dtype
         imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
         anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+
+        # Verify dimensions match
+        # pred_distri shape: (B, N, 4) where N is total spatial positions from all feature maps
+        # anchor_points shape: (M, 2) where M should equal N
+        if anchor_points.shape[0] != pred_distri.shape[1]:
+            total_spatial = sum(f.shape[2] * f.shape[3] for f in feats)
+            actual_spatial = pred_distri.shape[1]
+            anchor_count = anchor_points.shape[0]
+            raise RuntimeError(
+                f"Dimension mismatch: anchor_points has {anchor_count} points, "
+                f"but pred_distri has {actual_spatial} spatial positions. "
+                f"Expected {total_spatial} total spatial positions from feature maps: "
+                f"{[f'{f.shape[2]}x{f.shape[3]}={f.shape[2]*f.shape[3]}' for f in feats]}. "
+                f"This suggests feature maps were processed inconsistently."
+            )
 
         # Targets
         targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
@@ -872,7 +891,9 @@ class v8OBBLoss(v8DetectionLoss):
         """
         if self.use_dfl:
             b, a, c = pred_dist.shape  # batch, anchors, channels
-            pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(self.proj.type(pred_dist.dtype))
+            # Ensure proj is on the same device as pred_dist
+            proj = self.proj.to(pred_dist.device).type(pred_dist.dtype)
+            pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(proj)
         return torch.cat((dist2rbox(pred_dist, pred_angle, anchor_points), pred_angle), dim=-1)
 
 
