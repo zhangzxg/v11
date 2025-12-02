@@ -664,6 +664,20 @@ class BaseTrainer:
             (dict): Optional checkpoint to resume training from.
         """
         if isinstance(self.model, torch.nn.Module):  # if model is loaded beforehand. No setup needed
+            # Model was already created in YOLO.__init__, but we need to ensure it uses correct nc from dataset
+            # For custom models, we may need to recreate the model with correct nc
+            if hasattr(self.model, 'model') and hasattr(self.model.model, '__class__'):
+                if self.model.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
+                    # Check if model nc matches dataset nc
+                    if hasattr(self.model.model, 'nc') and hasattr(self, 'data') and 'nc' in self.data:
+                        if self.model.model.nc != self.data["nc"]:
+                            LOGGER.warning(
+                                f"Model was initialized with nc={self.model.model.nc}, but dataset has nc={self.data['nc']}. "
+                                f"Recreating model with correct nc from dataset."
+                            )
+                            # Recreate model with correct nc
+                            cfg = self.model.yaml if hasattr(self.model, 'yaml') else self.args.model
+                            self.model = self.get_model(cfg=cfg, weights=None, verbose=RANK == -1)
             return
 
         cfg, weights = self.model, None

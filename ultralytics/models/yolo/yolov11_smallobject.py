@@ -267,6 +267,24 @@ class YOLOv11SmallObjectDetector(nn.Module):
             nn.Conv2d(256, no, 1)  # (nc + reg_max * 4)
         )
         
+        # 验证 head 的输出通道数是否正确
+        # 通过检查最后一个卷积层的输出通道数
+        head1_out_channels = self.head1[-1].out_channels
+        head2_out_channels = self.head2[-1].out_channels
+        head3_out_channels = self.head3[-1].out_channels
+        
+        if head1_out_channels != no or head2_out_channels != no or head3_out_channels != no:
+            from ultralytics.utils import LOGGER
+            LOGGER.error(
+                f"YOLOv11SmallObjectDetector: Head output channels mismatch! "
+                f"head1: {head1_out_channels}, head2: {head2_out_channels}, head3: {head3_out_channels}, "
+                f"expected: {no} (nc={nc}, reg_max={reg_max})"
+            )
+            raise RuntimeError(
+                f"Head output channels mismatch: head1={head1_out_channels}, head2={head2_out_channels}, "
+                f"head3={head3_out_channels}, expected={no}"
+            )
+        
         if use_teacher:
             self.kl = nn.KLDivLoss(reduction='batchmean')
 
