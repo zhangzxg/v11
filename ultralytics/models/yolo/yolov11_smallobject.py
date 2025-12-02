@@ -298,6 +298,22 @@ class YOLOv11SmallObjectDetector(nn.Module):
         # 尺度3: P4/16 (p4) - 低分辨率
         out3 = self.head3(p4)  # P4/16 scale
         
+        # 验证输出通道数是否正确
+        reg_max = 16
+        expected_channels = self.nc + reg_max * 4
+        for i, out in enumerate([out1, out2, out3]):
+            if out.shape[1] != expected_channels:
+                from ultralytics.utils import LOGGER
+                LOGGER.error(
+                    f"YOLOv11SmallObjectDetector: Feature map {i} has {out.shape[1]} channels, "
+                    f"but expected {expected_channels} (nc={self.nc}, reg_max={reg_max}). "
+                    f"Model was initialized with wrong nc value!"
+                )
+                raise RuntimeError(
+                    f"Model head output channels mismatch: got {out.shape[1]}, expected {expected_channels}. "
+                    f"Please ensure model is initialized with nc={self.nc}."
+                )
+        
         # 返回多尺度特征图列表 (对应标准 YOLO 的 P3, P4, P5)
         outputs = [out1, out2, out3]
 
