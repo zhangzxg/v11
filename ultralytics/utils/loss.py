@@ -284,6 +284,26 @@ class v8DetectionLoss:
             f"no={self.no}, use_dfl={self.use_dfl}"
         )
 
+    def _resolve_stride_list(self, feats: list[torch.Tensor], img_shape: tuple[int, int]) -> list[float]:
+        """Ensure stride list length matches number of feature maps by inferring missing strides."""
+        if isinstance(self.stride, torch.Tensor):
+            stride_values = self.stride.detach().cpu().tolist()
+        else:
+            stride_values = list(self.stride)
+
+        if len(stride_values) != len(feats):
+            img_h, img_w = img_shape
+            stride_values = []
+            for feat in feats:
+                h, w = feat.shape[2:]
+                stride_h = img_h / h
+                stride_w = img_w / w
+                stride = float((stride_h + stride_w) / 2.0)
+                stride_values.append(stride)
+            self.stride = torch.tensor(stride_values, device=self.device, dtype=torch.float32)
+
+        return stride_values
+
     # -------- bbox 解码函数，兼容 DFL / 非 DFL --------
     def bbox_decode(self, anchor_points: torch.Tensor, pred_dist: torch.Tensor) -> torch.Tensor:
         """Decode predicted object bounding box coordinates from anchor points and distribution."""
@@ -361,22 +381,26 @@ class v8DetectionLoss:
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
 
         dtype = pred_scores.dtype
-        imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
-        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+        img_shape = batch["img"].shape[2:] if isinstance(batch, dict) and "img" in batch else feats[0].shape[2:]
+        imgsz = torch.tensor(img_shape, device=self.device, dtype=dtype)
+
+        stride_values = self._resolve_stride_list(feats, img_shape)
+        anchor_points, stride_tensor = make_anchors(feats, stride_values, 0.5)
 
         # Verify dimensions match
         # pred_distri shape: (B, N, 4) where N is total spatial positions from all feature maps
         # anchor_points shape: (M, 2) where M should equal N
         if anchor_points.shape[0] != pred_distri.shape[1]:
             total_spatial = sum(f.shape[2] * f.shape[3] for f in feats)
-            actual_spatial = pred_distri.shape[1]
             anchor_count = anchor_points.shape[0]
+            actual_spatial = pred_distri.shape[1]
             raise RuntimeError(
                 f"Dimension mismatch: anchor_points has {anchor_count} points, "
                 f"but pred_distri has {actual_spatial} spatial positions. "
                 f"Expected {total_spatial} total spatial positions from feature maps: "
                 f"{[f'{f.shape[2]}x{f.shape[3]}={f.shape[2]*f.shape[3]}' for f in feats]}. "
-                f"This suggests feature maps were processed inconsistently."
+                f"This suggests stride configuration ({len(stride_values)} strides) "
+                f"did not match the number of feature maps ({len(feats)})."
             )
 
         # Targets
