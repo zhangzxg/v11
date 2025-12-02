@@ -174,6 +174,8 @@ class BaseModel(torch.nn.Module):
                     outputs_list = result[0]  # Get the list of multi-scale outputs
                 else:
                     outputs_list = result  # Already a list of outputs
+                # Cache raw multi-scale outputs for loss computation during eval
+                self.model._last_outputs = outputs_list
                 
                 # Convert multi-scale feature maps to NMS format (similar to Detect._inference)
                 # Custom model has 3 scales: P2/4 (stride=4), P3/8 (stride=8), P4/16 (stride=16)
@@ -393,14 +395,22 @@ class BaseModel(torch.nn.Module):
         # Handle custom models like YOLOv11SmallObjectDetector
         if not isinstance(self.model, (nn.Sequential, list, tuple)):
             if hasattr(self.model, '__class__') and self.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
-                # Custom model now returns list of multi-scale outputs
-                # Format: (outputs, loss_feat, loss_output) or just outputs
+                # Custom model returns multi-scale outputs for loss. If preds is not already a list of 4D tensors,
+                # try to reuse cached raw outputs saved during the forward pass.
                 if isinstance(preds, tuple):
-                    preds = preds[0]  # Take only the prediction list, ignore loss_feat and loss_output
-                # preds should already be a list of 3 feature maps now
+                    preds = preds[0]
+                if not (isinstance(preds, list) and all(isinstance(f, torch.Tensor) and f.ndim == 4 for f in preds)):
+                    cached = getattr(self.model, "_last_outputs", None)
+                    if cached is not None:
+                        preds = cached
+                    else:
+                        # Fallback: recompute with current batch to obtain raw features
+                        raw = self.model(batch["img"])
+                        if isinstance(raw, tuple):
+                            raw = raw[0]
+                        preds = raw
                 if not isinstance(preds, list):
-                    # Fallback: if somehow it's still a tensor, convert to list
-                    preds = [preds, preds, preds]
+                    preds = [preds] if isinstance(preds, torch.Tensor) else list(preds)
         
         return self.criterion(preds, batch)
 
