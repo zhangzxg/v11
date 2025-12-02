@@ -670,14 +670,38 @@ class BaseTrainer:
                 if self.model.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
                     # Check if model nc matches dataset nc
                     if hasattr(self.model.model, 'nc') and hasattr(self, 'data') and 'nc' in self.data:
-                        if self.model.model.nc != self.data["nc"]:
+                        # Check head output channels to verify nc is correct
+                        head1_channels = self.model.model.head1[-1].out_channels if hasattr(self.model.model, 'head1') else None
+                        expected_channels = self.data["nc"] + 16 * 4  # nc + reg_max * 4
+                        
+                        if self.model.model.nc != self.data["nc"] or (head1_channels and head1_channels != expected_channels):
                             LOGGER.warning(
-                                f"Model was initialized with nc={self.model.model.nc}, but dataset has nc={self.data['nc']}. "
+                                f"Model was initialized with nc={self.model.model.nc}, head channels={head1_channels}, "
+                                f"but dataset has nc={self.data['nc']}, expected channels={expected_channels}. "
                                 f"Recreating model with correct nc from dataset."
                             )
-                            # Recreate model with correct nc
-                            cfg = self.model.yaml if hasattr(self.model, 'yaml') else self.args.model
+                            # Recreate model with correct nc (no weights to avoid overriding head)
+                            # Use the original YAML file path, not the dict (which may have old nc value)
+                            cfg = self.args.model if hasattr(self.args, 'model') else (self.model.yaml if isinstance(self.model.yaml, str) else None)
+                            if cfg is None:
+                                # Fallback: use YAML dict but update nc
+                                if hasattr(self.model, 'yaml') and isinstance(self.model.yaml, dict):
+                                    cfg = self.model.yaml.copy()
+                                    cfg['nc'] = self.data["nc"]  # Force update nc in dict
+                                else:
+                                    raise RuntimeError("Cannot determine model config for recreation")
+                            
                             self.model = self.get_model(cfg=cfg, weights=None, verbose=RANK == -1)
+                            # Verify the new model has correct channels
+                            if hasattr(self.model.model, 'head1'):
+                                new_head1_channels = self.model.model.head1[-1].out_channels
+                                if new_head1_channels != expected_channels:
+                                    raise RuntimeError(
+                                        f"Failed to recreate model with correct nc. "
+                                        f"New model head1 channels={new_head1_channels}, expected={expected_channels}. "
+                                        f"Model nc={self.model.model.nc}, dataset nc={self.data['nc']}. "
+                                        f"Please check model initialization."
+                                    )
             return
 
         cfg, weights = self.model, None
