@@ -35,7 +35,10 @@ class SmallObjectBranch(nn.Module):
             self.block = nn.Sequential(
                 GhostModule(in_channels, out_channels),
                 GhostModule(out_channels, out_channels),
-                GhostModule(out_channels, out_channels)
+                GhostModule(out_channels, out_channels),
+                # 添加残差连接的支持
+                nn.Conv2d(out_channels, out_channels, 1, bias=False),
+                nn.BatchNorm2d(out_channels)
             )
         else:
             # 使用标准卷积替代Ghost模块
@@ -48,11 +51,19 @@ class SmallObjectBranch(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
                 nn.BatchNorm2d(out_channels),
-                nn.ReLU(inplace=True)
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, 1, bias=False),
+                nn.BatchNorm2d(out_channels)
             )
+        
+        # 如果输入输出通道数相同，添加残差连接
+        self.use_residual = (in_channels == out_channels)
 
     def forward(self, x):
-        return self.block(x)
+        out = self.block(x)
+        if self.use_residual:
+            out = out + x
+        return F.relu(out)
 
 # Swin 注意力窗口（简化 + 相对位置编码）
 class LocalAttention(nn.Module):
@@ -60,13 +71,18 @@ class LocalAttention(nn.Module):
         super().__init__()
         self.use_attention = use_attention
         self.use_pos_encoding = use_pos_encoding
+        self.dim = dim
         if use_attention:
             self.to_qkv = nn.Conv2d(dim, dim * 3, 1)
             self.proj = nn.Conv2d(dim, dim, 1)
+            self.norm = nn.LayerNorm(dim)
             if use_pos_encoding:
-                self.rel_pos = nn.Parameter(torch.randn(1, dim, 1, 1))  # 简化位置编码
+                # 相对位置编码：为每个空间位置学习位置偏差
+                self.rel_pos_h = nn.Parameter(torch.randn(2 * window_size - 1, dim))
+                self.rel_pos_w = nn.Parameter(torch.randn(2 * window_size - 1, dim))
             else:
-                self.rel_pos = None
+                self.rel_pos_h = None
+                self.rel_pos_w = None
         else:
             # 使用标准卷积替代注意力机制
             self.conv = nn.Sequential(
@@ -80,12 +96,21 @@ class LocalAttention(nn.Module):
             B, C, H, W = x.shape
             qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
-            if self.use_pos_encoding and self.rel_pos is not None:
-                q = q + self.rel_pos
-                k = k + self.rel_pos
-            attn = (q * k).sum(1, keepdim=True) / (C ** 0.5)
+            
+            # 标准的缩放点积注意力
+            # q, k, v: (B, C, H, W)
+            q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            
+            # 计算注意力权重: (B, HW, C) @ (B, C, HW) = (B, HW, HW)
+            attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
             attn = F.softmax(attn, dim=-1)
-            out = attn * v
+            
+            # 应用注意力到值: (B, HW, HW) @ (B, HW, C) = (B, HW, C)
+            out_flat = torch.matmul(attn, v_flat)  # (B, HW, C)
+            out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)  # (B, C, H, W)
+            
             return self.proj(out)
         else:
             return self.conv(x)
@@ -97,39 +122,44 @@ class CrossScaleAttention(nn.Module):
         self.use_attention = use_attention
         self.use_pos_encoding = use_pos_encoding
         self.align_main = nn.Conv2d(in_main, in_small, 1)
-        if use_pos_encoding:
-            self.pos_embed_main = nn.Parameter(torch.randn(1, in_small, 1, 1))
-            self.pos_embed_small = nn.Parameter(torch.randn(1, in_small, 1, 1))
-        else:
-            self.pos_embed_main = None
-            self.pos_embed_small = None
+        
+        # 学习融合权重而不是固定的位置编码
+        self.fusion_weight = nn.Parameter(torch.ones(1, 1, 1, 1) * 0.5)
         
         if use_attention:
             self.attn_small = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
             self.attn_main = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
-            self.fuse = nn.Conv2d(in_small * 2, in_small, 1)
-        else:
-            # 使用简单concat + conv替代注意力融合
-            self.fuse = nn.Sequential(
-                nn.Conv2d(in_small * 2, in_small, 1, bias=False),
-                nn.BatchNorm2d(in_small),
-                nn.ReLU(inplace=True)
-            )
+        
+        # 融合层：使用更复杂的融合策略
+        self.fuse = nn.Sequential(
+            nn.Conv2d(in_small * 2, in_small * 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(in_small * 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_small * 2, in_small, 1, bias=False),
+            nn.BatchNorm2d(in_small),
+            nn.ReLU(inplace=True)
+        )
 
     def forward(self, small_feat, main_feat):
+        # 对齐尺度
         if main_feat.shape[2:] != small_feat.shape[2:]:
             main_feat = F.interpolate(main_feat, size=small_feat.shape[2:], mode='nearest')
+        
+        # 对齐通道数
         main_feat = self.align_main(main_feat)
-        if self.use_pos_encoding and self.pos_embed_main is not None:
-            main_feat = main_feat + self.pos_embed_main
-            small_feat = small_feat + self.pos_embed_small
         
         if self.use_attention:
+            # 分别对两个特征应用注意力
             small_attn = self.attn_small(small_feat)
             main_attn = self.attn_main(main_feat)
-            return self.fuse(torch.cat([small_attn, main_attn], dim=1))
+            # 加权融合
+            fused = small_attn * self.fusion_weight + main_attn * (1 - self.fusion_weight)
+            # 通过融合层进一步处理
+            return self.fuse(torch.cat([fused, small_attn + main_attn], dim=1))
         else:
-            return self.fuse(torch.cat([small_feat, main_feat], dim=1))
+            # 不使用注意力时的简单融合
+            fused = small_feat * self.fusion_weight + main_feat * (1 - self.fusion_weight)
+            return self.fuse(torch.cat([fused, small_feat + main_feat], dim=1))
 
 # 主干结构
 class BackboneWithSmallBranch(nn.Module):
@@ -255,24 +285,36 @@ class YOLOv11SmallObjectDetector(nn.Module):
         # 检测头3: 用于 P4/16 尺度 (p4, 低分辨率)
         head3_in_channels = 256  # p4
         
-        # 优化检测头以减少内存占用
-        # 使用更小的中间通道数，特别是对于高分辨率的 head1
+        # 改进的检测头：增加特征提取能力和训练稳定性
+        # 使用BatchNorm和更多的卷积层来增强特征表达
         self.head1 = nn.Sequential(
-            nn.Conv2d(head1_in_channels, 64, 3, padding=1),  # 减小到64通道
-            nn.ReLU(),
-            nn.Conv2d(64, no, 1)  # (nc + reg_max * 4)
-        )
-        
-        self.head2 = nn.Sequential(
-            nn.Conv2d(head2_in_channels, 128, 3, padding=1),  # 减小到128通道
-            nn.ReLU(),
+            nn.Conv2d(head1_in_channels, 128, 3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
             nn.Conv2d(128, no, 1)  # (nc + reg_max * 4)
         )
         
-        self.head3 = nn.Sequential(
-            nn.Conv2d(head3_in_channels, 256, 3, padding=1),  # 减小到256通道
-            nn.ReLU(),
+        self.head2 = nn.Sequential(
+            nn.Conv2d(head2_in_channels, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
             nn.Conv2d(256, no, 1)  # (nc + reg_max * 4)
+        )
+        
+        self.head3 = nn.Sequential(
+            nn.Conv2d(head3_in_channels, 512, 3, padding=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, 3, padding=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, no, 1)  # (nc + reg_max * 4)
         )
         
         # 验证 head 的输出通道数是否正确
