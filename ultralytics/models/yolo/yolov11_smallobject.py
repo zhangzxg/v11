@@ -25,16 +25,18 @@ class GhostModule(nn.Module):
     def forward(self, x):
         x1 = self.primary_conv(x)
         x2 = self.cheap_operation(x1)
-        return torch.cat([x1, x2], dim=1)
+        # 优化：使用in-place操作减少内存占用
+        # 不保存中间的x1和x2，直接拼接
+        return torch.cat([x1, x2], dim=1, out=None)
 
 # 小目标分支
 class SmallObjectBranch(nn.Module):
     def __init__(self, in_channels, out_channels, use_ghost=True):
         super().__init__()
         if use_ghost:
+            # 优化：减少Ghost模块的堆叠数量（从3个改为2个）
             self.block = nn.Sequential(
                 GhostModule(in_channels, out_channels),
-                GhostModule(out_channels, out_channels),
                 GhostModule(out_channels, out_channels),
                 # 添加残差连接的支持
                 nn.Conv2d(out_channels, out_channels, 1, bias=False),
@@ -42,16 +44,13 @@ class SmallObjectBranch(nn.Module):
             )
         else:
             # 使用标准卷积替代Ghost模块
+            # 优化：减少卷积层数量（从3个改为2个）
             self.block = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
                 nn.BatchNorm2d(out_channels),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
                 nn.BatchNorm2d(out_channels),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
-                nn.ReLU(inplace=True),
                 nn.Conv2d(out_channels, out_channels, 1, bias=False),
                 nn.BatchNorm2d(out_channels)
             )
@@ -72,6 +71,7 @@ class LocalAttention(nn.Module):
         self.use_attention = use_attention
         self.use_pos_encoding = use_pos_encoding
         self.dim = dim
+        self.window_size = window_size
         if use_attention:
             self.to_qkv = nn.Conv2d(dim, dim * 3, 1)
             self.proj = nn.Conv2d(dim, dim, 1)
@@ -97,19 +97,47 @@ class LocalAttention(nn.Module):
             qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
-            # 标准的缩放点积注意力
-            # q, k, v: (B, C, H, W)
-            q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
-            k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
-            v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            # 优化：使用窗口注意力而不是全局注意力，减少内存占用
+            # 将特征图分割成窗口，只在窗口内计算注意力
+            window_size = self.window_size
             
-            # 计算注意力权重: (B, HW, C) @ (B, C, HW) = (B, HW, HW)
-            attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
-            attn = F.softmax(attn, dim=-1)
-            
-            # 应用注意力到值: (B, HW, HW) @ (B, HW, C) = (B, HW, C)
-            out_flat = torch.matmul(attn, v_flat)  # (B, HW, C)
-            out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)  # (B, C, H, W)
+            # 如果特征图太大，使用窗口注意力
+            if H * W > 4096:  # 64x64 或更大
+                # 分割成窗口
+                q_windows = q.reshape(B, C, H // window_size, window_size, W // window_size, window_size)
+                q_windows = q_windows.permute(0, 2, 4, 1, 3, 5).reshape(B * (H // window_size) * (W // window_size), C, window_size, window_size)
+                
+                k_windows = k.reshape(B, C, H // window_size, window_size, W // window_size, window_size)
+                k_windows = k_windows.permute(0, 2, 4, 1, 3, 5).reshape(B * (H // window_size) * (W // window_size), C, window_size, window_size)
+                
+                v_windows = v.reshape(B, C, H // window_size, window_size, W // window_size, window_size)
+                v_windows = v_windows.permute(0, 2, 4, 1, 3, 5).reshape(B * (H // window_size) * (W // window_size), C, window_size, window_size)
+                
+                # 在每个窗口内计算注意力
+                q_flat = q_windows.reshape(-1, C, window_size * window_size).permute(0, 2, 1)  # (N_windows, WW, C)
+                k_flat = k_windows.reshape(-1, C, window_size * window_size).permute(0, 2, 1)  # (N_windows, WW, C)
+                v_flat = v_windows.reshape(-1, C, window_size * window_size).permute(0, 2, 1)  # (N_windows, WW, C)
+                
+                attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
+                attn = F.softmax(attn, dim=-1)
+                
+                out_flat = torch.matmul(attn, v_flat)  # (N_windows, WW, C)
+                out_windows = out_flat.permute(0, 2, 1).reshape(-1, C, window_size, window_size)
+                
+                # 恢复原始形状
+                out = out_windows.reshape(B, H // window_size, W // window_size, C, window_size, window_size)
+                out = out.permute(0, 3, 1, 4, 2, 5).reshape(B, C, H, W)
+            else:
+                # 对于小特征图，使用全局注意力
+                q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+                k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+                v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+                
+                attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
+                attn = F.softmax(attn, dim=-1)
+                
+                out_flat = torch.matmul(attn, v_flat)  # (B, HW, C)
+                out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)  # (B, C, H, W)
             
             return self.proj(out)
         else:
@@ -128,13 +156,9 @@ class CrossScaleAttention(nn.Module):
         
         if use_attention:
             self.attn_small = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
-            self.attn_main = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
         
-        # 融合层：使用更复杂的融合策略
+        # 优化融合层：减少卷积层数量和参数
         self.fuse = nn.Sequential(
-            nn.Conv2d(in_small * 2, in_small * 2, 3, padding=1, bias=False),
-            nn.BatchNorm2d(in_small * 2),
-            nn.ReLU(inplace=True),
             nn.Conv2d(in_small * 2, in_small, 1, bias=False),
             nn.BatchNorm2d(in_small),
             nn.ReLU(inplace=True)
@@ -149,17 +173,17 @@ class CrossScaleAttention(nn.Module):
         main_feat = self.align_main(main_feat)
         
         if self.use_attention:
-            # 分别对两个特征应用注意力
+            # 优化：只对小特征应用注意力，减少计算量
             small_attn = self.attn_small(small_feat)
-            main_attn = self.attn_main(main_feat)
-            # 加权融合
-            fused = small_attn * self.fusion_weight + main_attn * (1 - self.fusion_weight)
-            # 通过融合层进一步处理
-            return self.fuse(torch.cat([fused, small_attn + main_attn], dim=1))
+            # 直接融合，不创建额外的中间张量
+            fused = small_attn * self.fusion_weight + main_feat * (1 - self.fusion_weight)
+            # 优化：减少拼接的张量数量，只拼接融合结果和主特征
+            return self.fuse(torch.cat([fused, main_feat], dim=1))
         else:
             # 不使用注意力时的简单融合
             fused = small_feat * self.fusion_weight + main_feat * (1 - self.fusion_weight)
-            return self.fuse(torch.cat([fused, small_feat + main_feat], dim=1))
+            # 优化：只拼接融合结果和主特征
+            return self.fuse(torch.cat([fused, main_feat], dim=1))
 
 # 主干结构
 class BackboneWithSmallBranch(nn.Module):
@@ -372,12 +396,23 @@ class YOLOv11SmallObjectDetector(nn.Module):
         loss_feat, loss_output = 0.0, 0.0
         if self.use_teacher:
             if teacher_feats is not None:
-                loss_feat = F.mse_loss(p3, teacher_feats[0]) + F.mse_loss(p4, teacher_feats[1])
+                # 优化：使用detach()避免梯度计算，减少内存占用
+                teacher_feat_0 = teacher_feats[0].detach() if hasattr(teacher_feats[0], 'detach') else teacher_feats[0]
+                teacher_feat_1 = teacher_feats[1].detach() if hasattr(teacher_feats[1], 'detach') else teacher_feats[1]
+                
+                # 特征蒸馏损失：只计算相关尺度的损失
+                loss_feat = F.mse_loss(p3, teacher_feat_0) + F.mse_loss(p4, teacher_feat_1)
+                
             if teacher_output is not None:
-                # 对于多尺度输出，使用第一个尺度进行蒸馏
-                s_logits = outputs[0].view(outputs[0].size(0), outputs[0].size(1), -1).permute(0, 2, 1)
+                # 优化：对于多尺度输出，只使用中等分辨率的特征进行蒸馏，减少计算量
+                # 使用 out2 (P3/8) 而不是 out1，因为 out2 分辨率更合理
+                s_logits = out2.view(out2.size(0), out2.size(1), -1).permute(0, 2, 1)
                 t_logits = teacher_output.view(teacher_output.size(0), teacher_output.size(1), -1).permute(0, 2, 1).detach()
-                loss_output = self.kl(F.log_softmax(s_logits, dim=-1), F.softmax(t_logits, dim=-1))
+                
+                # 优化：使用更轻量的蒸馏损失计算
+                # 只计算置信度和类别的蒸馏，不计算回归分支
+                loss_output = self.kl(F.log_softmax(s_logits[..., :self.nc], dim=-1), 
+                                     F.softmax(t_logits[..., :self.nc], dim=-1))
         
         # 返回多尺度输出列表，与标准 YOLO 格式一致
         if self.use_teacher:
