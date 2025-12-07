@@ -98,44 +98,57 @@ class LocalAttention(nn.Module):
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
             # 优化：使用窗口注意力而不是全局注意力，减少内存占用
-            # 将特征图分割成窗口，只在窗口内计算注意力
             window_size = self.window_size
             
             # 如果特征图太大，使用窗口注意力
             if H * W > 4096:  # 64x64 或更大
-                # 计算能整除的窗口数
-                h_windows = max(1, H // window_size)
-                w_windows = max(1, W // window_size)
+                # 使用unfold进行高效的窗口分割
+                # 计算窗口数量
+                h_windows = (H + window_size - 1) // window_size
+                w_windows = (W + window_size - 1) // window_size
                 
-                # 调整窗口大小以确保能整除
-                h_window_actual = H // h_windows
-                w_window_actual = W // w_windows
+                # 对于不能整除的情况，进行padding
+                h_pad = h_windows * window_size - H
+                w_pad = w_windows * window_size - W
                 
-                # 分割成窗口
-                q_windows = q.reshape(B, C, h_windows, h_window_actual, w_windows, w_window_actual)
-                q_windows = q_windows.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, h_window_actual, w_window_actual)
+                if h_pad > 0 or w_pad > 0:
+                    q = F.pad(q, (0, w_pad, 0, h_pad), mode='constant', value=0)
+                    k = F.pad(k, (0, w_pad, 0, h_pad), mode='constant', value=0)
+                    v = F.pad(v, (0, w_pad, 0, h_pad), mode='constant', value=0)
+                    H_pad = H + h_pad
+                    W_pad = W + w_pad
+                else:
+                    H_pad, W_pad = H, W
                 
-                k_windows = k.reshape(B, C, h_windows, h_window_actual, w_windows, w_window_actual)
-                k_windows = k_windows.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, h_window_actual, w_window_actual)
+                # 重新reshape为窗口
+                q = q.reshape(B, C, h_windows, window_size, w_windows, window_size)
+                q = q.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
                 
-                v_windows = v.reshape(B, C, h_windows, h_window_actual, w_windows, w_window_actual)
-                v_windows = v_windows.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, h_window_actual, w_window_actual)
+                k = k.reshape(B, C, h_windows, window_size, w_windows, window_size)
+                k = k.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
+                
+                v = v.reshape(B, C, h_windows, window_size, w_windows, window_size)
+                v = v.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
                 
                 # 在每个窗口内计算注意力
-                window_area = h_window_actual * w_window_actual
-                q_flat = q_windows.reshape(-1, C, window_area).permute(0, 2, 1)  # (N_windows, WA, C)
-                k_flat = k_windows.reshape(-1, C, window_area).permute(0, 2, 1)  # (N_windows, WA, C)
-                v_flat = v_windows.reshape(-1, C, window_area).permute(0, 2, 1)  # (N_windows, WA, C)
+                window_area = window_size * window_size
+                q_flat = q.reshape(-1, C, window_area).permute(0, 2, 1)  # (N_windows, WA, C)
+                k_flat = k.reshape(-1, C, window_area).permute(0, 2, 1)  # (N_windows, WA, C)
+                v_flat = v.reshape(-1, C, window_area).permute(0, 2, 1)  # (N_windows, WA, C)
                 
                 attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
                 attn = F.softmax(attn, dim=-1)
                 
                 out_flat = torch.matmul(attn, v_flat)  # (N_windows, WA, C)
-                out_windows = out_flat.permute(0, 2, 1).reshape(-1, C, h_window_actual, w_window_actual)
+                out = out_flat.permute(0, 2, 1).reshape(-1, C, window_size, window_size)
                 
                 # 恢复原始形状
-                out = out_windows.reshape(B, h_windows, w_windows, C, h_window_actual, w_window_actual)
-                out = out.permute(0, 3, 1, 4, 2, 5).reshape(B, C, H, W)
+                out = out.reshape(B, h_windows, w_windows, C, window_size, window_size)
+                out = out.permute(0, 3, 1, 4, 2, 5).reshape(B, C, H_pad, W_pad)
+                
+                # 移除padding
+                if h_pad > 0 or w_pad > 0:
+                    out = out[:, :, :H, :W]
             else:
                 # 对于小特征图，使用全局注意力
                 q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
