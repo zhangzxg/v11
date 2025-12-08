@@ -34,23 +34,25 @@ class SmallObjectBranch(nn.Module):
     def __init__(self, in_channels, out_channels, use_ghost=True):
         super().__init__()
         if use_ghost:
-            # 优化：减少Ghost模块的堆叠数量（从3个改为2个）
+            # 平衡精度和内存：保持2.5层的深度
+            # 使用2个完整Ghost模块 + 1个轻量级Ghost模块
             self.block = nn.Sequential(
                 GhostModule(in_channels, out_channels),
                 GhostModule(out_channels, out_channels),
-                # 添加残差连接的支持
+                GhostModule(out_channels, out_channels, ratio=4),  # 轻量级Ghost模块，参数少
                 nn.Conv2d(out_channels, out_channels, 1, bias=False),
                 nn.BatchNorm2d(out_channels)
             )
         else:
             # 使用标准卷积替代Ghost模块
-            # 优化：减少卷积层数量（从3个改为2个）
+            # 平衡精度和内存：保持2.5层的深度
             self.block = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
                 nn.BatchNorm2d(out_channels),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
                 nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
                 nn.Conv2d(out_channels, out_channels, 1, bias=False),
                 nn.BatchNorm2d(out_channels)
             )
@@ -98,11 +100,12 @@ class LocalAttention(nn.Module):
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
             # 优化：使用窗口注意力而不是全局注意力，减少内存占用
+            # 但对于较小的特征图仍使用全局注意力以保证精度
             window_size = self.window_size
             
             # 如果特征图太大，使用窗口注意力
-            if H * W > 4096:  # 64x64 或更大
-                # 使用unfold进行高效的窗口分割
+            # 只在P2层（160x160）使用窗口注意力，其他层使用全局注意力
+            if H * W > 8192:  # 只在非常大的特征图上使用窗口注意力 (>90x90)
                 # 计算窗口数量
                 h_windows = (H + window_size - 1) // window_size
                 w_windows = (W + window_size - 1) // window_size
@@ -112,9 +115,9 @@ class LocalAttention(nn.Module):
                 w_pad = w_windows * window_size - W
                 
                 if h_pad > 0 or w_pad > 0:
-                    q = F.pad(q, (0, w_pad, 0, h_pad), mode='constant', value=0)
-                    k = F.pad(k, (0, w_pad, 0, h_pad), mode='constant', value=0)
-                    v = F.pad(v, (0, w_pad, 0, h_pad), mode='constant', value=0)
+                    q = F.pad(q, (0, w_pad, 0, h_pad), mode='reflect')
+                    k = F.pad(k, (0, w_pad, 0, h_pad), mode='reflect')
+                    v = F.pad(v, (0, w_pad, 0, h_pad), mode='reflect')
                     H_pad = H + h_pad
                     W_pad = W + w_pad
                 else:
@@ -150,7 +153,7 @@ class LocalAttention(nn.Module):
                 if h_pad > 0 or w_pad > 0:
                     out = out[:, :, :H, :W]
             else:
-                # 对于小特征图，使用全局注意力
+                # 对于小特征图，使用全局注意力（保证精度）
                 q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
                 k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
                 v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
@@ -179,8 +182,12 @@ class CrossScaleAttention(nn.Module):
         if use_attention:
             self.attn_small = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
         
-        # 优化融合层：减少卷积层数量和参数
+        # 融合层：平衡精度和内存
+        # 使用3x3卷积而不是5x5，保持感受野同时减少参数
         self.fuse = nn.Sequential(
+            nn.Conv2d(in_small * 2, in_small * 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(in_small * 2),
+            nn.ReLU(inplace=True),
             nn.Conv2d(in_small * 2, in_small, 1, bias=False),
             nn.BatchNorm2d(in_small),
             nn.ReLU(inplace=True)
