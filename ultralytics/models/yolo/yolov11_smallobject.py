@@ -46,17 +46,17 @@ class SEBlock(nn.Module):
 
 # 小目标分支
 class SmallObjectBranch(nn.Module):
-    def __init__(self, in_channels, out_channels, use_ghost=True):
+    def __init__(self, in_channels, out_channels=128, use_ghost=True):
         super().__init__()
         if use_ghost:
             # 加宽：128 -> 160 -> 128，末尾 SE
             self.block = nn.Sequential(
                 GhostModule(in_channels, 128),
                 GhostModule(128, 160),
-                nn.Conv2d(160, out_channels, 3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
+                nn.Conv2d(160, 128, 3, padding=1, bias=False),
+                nn.BatchNorm2d(128),
                 nn.ReLU(inplace=True),
-                SEBlock(out_channels)
+                SEBlock(128)
             )
         else:
             # 卷积版同样加宽
@@ -67,14 +67,14 @@ class SmallObjectBranch(nn.Module):
                 nn.Conv2d(128, 160, 3, padding=1, bias=False),
                 nn.BatchNorm2d(160),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(160, out_channels, 3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
+                nn.Conv2d(160, 128, 3, padding=1, bias=False),
+                nn.BatchNorm2d(128),
                 nn.ReLU(inplace=True),
-                SEBlock(out_channels)
+                SEBlock(128)
             )
         
         # 如果输入输出通道数相同，添加残差连接
-        self.use_residual = (in_channels == out_channels)
+        self.use_residual = (in_channels == 128)
 
     def forward(self, x):
         out = self.block(x)
@@ -210,13 +210,13 @@ class CrossScaleAttention(nn.Module):
         
         # 融合层：加宽中间通道（3x3 -> 3x3 -> 1x1）
         self.fuse = nn.Sequential(
-            nn.Conv2d(in_small * 2, 192, 3, padding=1, bias=False),
-            nn.BatchNorm2d(192),
+            nn.Conv2d(in_small * 2, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, 3, padding=1, bias=False),
-            nn.BatchNorm2d(192),
+            nn.Conv2d(256, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(192, in_small, 1, bias=False),
+            nn.Conv2d(256, in_small, 1, bias=False),
             nn.BatchNorm2d(in_small),
             nn.ReLU(inplace=True)
         )
@@ -274,7 +274,7 @@ class BackboneWithSmallBranch(nn.Module):
             nn.ReLU()
         )
         if use_small_branch:
-            self.small_branch = SmallObjectBranch(64, 64, use_ghost=use_ghost)
+            self.small_branch = SmallObjectBranch(64, 128, use_ghost=use_ghost)
         self.layer2 = nn.Sequential(
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
@@ -349,11 +349,11 @@ class YOLOv11SmallObjectDetector(nn.Module):
         if use_cross_scale_fusion and use_small_branch:
             self.fusion = CrossScaleAttention(
                 in_main=128, 
-                in_small=64,
+                in_small=128,
                 use_attention=use_attention,
                 use_pos_encoding=use_pos_encoding
             )
-            fusion_in_channels = 64
+            fusion_in_channels = 128
         else:
             # 如果不使用跨尺度融合或小目标分支，直接使用主分支特征
             self.fusion = None
@@ -367,14 +367,14 @@ class YOLOv11SmallObjectDetector(nn.Module):
         
         # 检测头1: 用于 P2/4 尺度 (small_feat, 高分辨率，用于小目标)
         if use_cross_scale_fusion and use_small_branch:
-            head1_in_channels = 64  # fused feature from small branch
+            head1_in_channels = 128  # fused feature from small branch
         else:
             if use_small_branch:
-                head1_in_channels = 64  # small_feat
+                head1_in_channels = 128  # small_feat now 128
             else:
                 # 如果没有小目标分支，需要从 p3 适配
-                head1_in_channels = 128  # p3 channels, will be adapted to 64
-                self.p2_adapter = nn.Conv2d(128, 64, 1)  # Adapter for p3 to p2 scale
+                head1_in_channels = 128  # p3 channels, will be adapted to 128
+                self.p2_adapter = nn.Conv2d(128, 128, 1)  # Adapter for p3 to p2 scale
         
         # 检测头2: 用于 P3/8 尺度 (p3, 中等分辨率)
         head2_in_channels = 128  # p3
@@ -385,33 +385,33 @@ class YOLOv11SmallObjectDetector(nn.Module):
         # 改进的检测头：增加特征提取能力和训练稳定性
         # 使用BatchNorm和更多的卷积层来增强特征表达
         self.head1 = nn.Sequential(
-            nn.Conv2d(head1_in_channels, 128, 3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(head1_in_channels, 160, 3, padding=1, bias=False),
+            nn.BatchNorm2d(160),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, 3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(160, 160, 3, padding=1, bias=False),
+            nn.BatchNorm2d(160),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, no, 1)  # (nc + reg_max * 4)
+            nn.Conv2d(160, no, 1)  # (nc + reg_max * 4)
         )
         
         self.head2 = nn.Sequential(
-            nn.Conv2d(head2_in_channels, 256, 3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(head2_in_channels, 320, 3, padding=1, bias=False),
+            nn.BatchNorm2d(320),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, 3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(320, 320, 3, padding=1, bias=False),
+            nn.BatchNorm2d(320),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, no, 1)  # (nc + reg_max * 4)
+            nn.Conv2d(320, no, 1)  # (nc + reg_max * 4)
         )
         
         self.head3 = nn.Sequential(
-            nn.Conv2d(head3_in_channels, 512, 3, padding=1, bias=False),
-            nn.BatchNorm2d(512),
+            nn.Conv2d(head3_in_channels, 640, 3, padding=1, bias=False),
+            nn.BatchNorm2d(640),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=1, bias=False),
-            nn.BatchNorm2d(512),
+            nn.Conv2d(640, 640, 3, padding=1, bias=False),
+            nn.BatchNorm2d(640),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, no, 1)  # (nc + reg_max * 4)
+            nn.Conv2d(640, no, 1)  # (nc + reg_max * 4)
         )
         
         # 验证 head 的输出通道数是否正确
