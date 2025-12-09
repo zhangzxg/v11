@@ -25,9 +25,7 @@ class GhostModule(nn.Module):
     def forward(self, x):
         x1 = self.primary_conv(x)
         x2 = self.cheap_operation(x1)
-        # 优化：使用in-place操作减少内存占用
-        # 不保存中间的x1和x2，直接拼接
-        return torch.cat([x1, x2], dim=1, out=None)
+        return torch.cat([x1, x2], dim=1)
 
 # 小目标分支
 class SmallObjectBranch(nn.Module):
@@ -35,7 +33,6 @@ class SmallObjectBranch(nn.Module):
         super().__init__()
         if use_ghost:
             # 恢复3层完整Ghost模块以保证精度
-            # 显存增加仅~100MB，但精度恢复显著
             self.block = nn.Sequential(
                 GhostModule(in_channels, out_channels),
                 GhostModule(out_channels, out_channels),
@@ -99,71 +96,59 @@ class LocalAttention(nn.Module):
             qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
-            window_threshold = 8192  # 对应 90x90 以上特征图
-            if H * W > window_threshold:
-                # 对最大尺度使用窗口注意力（更稳定的小目标表现）
-                window_size = self.window_size
-                h_windows = (H + window_size - 1) // window_size
-                w_windows = (W + window_size - 1) // window_size
-                h_pad = h_windows * window_size - H
-                w_pad = w_windows * window_size - W
-                
-                if h_pad > 0 or w_pad > 0:
-                    q = F.pad(q, (0, w_pad, 0, h_pad), mode='reflect')
-                    k = F.pad(k, (0, w_pad, 0, h_pad), mode='reflect')
-                    v = F.pad(v, (0, w_pad, 0, h_pad), mode='reflect')
-                    H_pad = H + h_pad
-                    W_pad = W + w_pad
-                else:
-                    H_pad, W_pad = H, W
-                
-                q = q.reshape(B, C, h_windows, window_size, w_windows, window_size)
-                q = q.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-                k = k.reshape(B, C, h_windows, window_size, w_windows, window_size)
-                k = k.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-                v = v.reshape(B, C, h_windows, window_size, w_windows, window_size)
-                v = v.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-                
-                window_area = window_size * window_size
-                q_flat = q.reshape(-1, C, window_area).permute(0, 2, 1)
-                k_flat = k.reshape(-1, C, window_area).permute(0, 2, 1)
-                v_flat = v.reshape(-1, C, window_area).permute(0, 2, 1)
-                
-                attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
-                attn = F.softmax(attn, dim=-1)
-                
-                out_flat = torch.matmul(attn, v_flat)
-                out = out_flat.permute(0, 2, 1).reshape(-1, C, window_size, window_size)
-                out = out.reshape(B, h_windows, w_windows, C, window_size, window_size)
-                out = out.permute(0, 3, 1, 4, 2, 5).reshape(B, C, H_pad, W_pad)
-                
-                if h_pad > 0 or w_pad > 0:
-                    out = out[:, :, :H, :W]
-            else:
-                # 对较小尺度使用分块全局注意力，兼顾显存与精度
-                q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
-                k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
-                v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
-                
-                k_transpose = k_flat.permute(0, 2, 1)  # (B, C, HW)
-                chunk_size = 2048
-                outputs = []
-                scale = self.dim ** 0.5
-                
-                for start in range(0, q_flat.size(1), chunk_size):
-                    end = min(start + chunk_size, q_flat.size(1))
-                    q_chunk = q_flat[:, start:end, :]
-                    
-                    attn_chunk = torch.matmul(q_chunk, k_transpose) / scale
-                    attn_chunk = F.softmax(attn_chunk, dim=-1)
-                    
-                    out_chunk = torch.matmul(attn_chunk, v_flat)
-                    outputs.append(out_chunk)
-                
-                out_flat = torch.cat(outputs, dim=1)
-                out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)
+            # 全窗口注意力（含相对位置编码），统一采用窗口划分防 OOM
+            window_size = self.window_size
+            h_windows = (H + window_size - 1) // window_size
+            w_windows = (W + window_size - 1) // window_size
+            h_pad = h_windows * window_size - H
+            w_pad = w_windows * window_size - W
             
-            return self.proj(out)
+            if h_pad > 0 or w_pad > 0:
+                q = F.pad(q, (0, w_pad, 0, h_pad), mode='reflect')
+                k = F.pad(k, (0, w_pad, 0, h_pad), mode='reflect')
+                v = F.pad(v, (0, w_pad, 0, h_pad), mode='reflect')
+                H_pad = H + h_pad
+                W_pad = W + w_pad
+            else:
+                H_pad, W_pad = H, W
+            
+            q = q.reshape(B, C, h_windows, window_size, w_windows, window_size)
+            k = k.reshape(B, C, h_windows, window_size, w_windows, window_size)
+            v = v.reshape(B, C, h_windows, window_size, w_windows, window_size)
+            
+            q = q.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
+            k = k.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
+            v = v.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
+            
+            window_area = window_size * window_size
+            q_flat = q.reshape(-1, C, window_area).permute(0, 2, 1)
+            k_flat = k.reshape(-1, C, window_area).permute(0, 2, 1)
+            v_flat = v.reshape(-1, C, window_area).permute(0, 2, 1)
+            
+            # 相对位置偏置（通道均值成标量）
+            coords = torch.arange(window_size, device=q.device)
+            rel_idx = coords[None, :] - coords[:, None] + window_size - 1  # (ws, ws)
+            rel_bias_h = self.rel_pos_h[rel_idx]  # (ws, ws, C)
+            rel_bias_w = self.rel_pos_w[rel_idx]  # (ws, ws, C)
+            rel_bias = rel_bias_h[:, None, :, None, :] + rel_bias_w[None, :, None, :, :]  # (ws, ws, ws, ws, C)
+            rel_bias = rel_bias.mean(-1).reshape(window_area, window_area)  # (WA, WA)
+            
+            attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
+            attn = attn + rel_bias
+            attn = F.softmax(attn, dim=-1)
+            
+            out_flat = torch.matmul(attn, v_flat)
+            out = out_flat.permute(0, 2, 1).reshape(-1, C, window_size, window_size)
+            out = out.reshape(B, h_windows, w_windows, C, window_size, window_size)
+            out = out.permute(0, 3, 1, 4, 2, 5).reshape(B, C, H_pad, W_pad)
+            
+            if h_pad > 0 or w_pad > 0:
+                out = out[:, :, :H, :W]
+            
+            out = self.proj(out)
+            out = out + x
+            out = self.norm(out.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+            return out
         else:
             return self.conv(x)
 
