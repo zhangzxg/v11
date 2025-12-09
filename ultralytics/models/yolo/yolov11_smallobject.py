@@ -96,54 +96,16 @@ class LocalAttention(nn.Module):
             qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
-            # 全窗口注意力（含相对位置编码），统一采用窗口划分防 OOM
-            window_size = self.window_size
-            h_windows = (H + window_size - 1) // window_size
-            w_windows = (W + window_size - 1) // window_size
-            h_pad = h_windows * window_size - H
-            w_pad = w_windows * window_size - W
-            
-            if h_pad > 0 or w_pad > 0:
-                q = F.pad(q, (0, w_pad, 0, h_pad), mode='reflect')
-                k = F.pad(k, (0, w_pad, 0, h_pad), mode='reflect')
-                v = F.pad(v, (0, w_pad, 0, h_pad), mode='reflect')
-                H_pad = H + h_pad
-                W_pad = W + w_pad
-            else:
-                H_pad, W_pad = H, W
-            
-            q = q.reshape(B, C, h_windows, window_size, w_windows, window_size)
-            k = k.reshape(B, C, h_windows, window_size, w_windows, window_size)
-            v = v.reshape(B, C, h_windows, window_size, w_windows, window_size)
-            
-            q = q.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-            k = k.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-            v = v.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-            
-            window_area = window_size * window_size
-            q_flat = q.reshape(-1, C, window_area).permute(0, 2, 1)
-            k_flat = k.reshape(-1, C, window_area).permute(0, 2, 1)
-            v_flat = v.reshape(-1, C, window_area).permute(0, 2, 1)
-            
-            # 相对位置偏置（通道均值成标量）
-            coords = torch.arange(window_size, device=q.device)
-            rel_idx = coords[None, :] - coords[:, None] + window_size - 1  # (ws, ws)
-            rel_bias_h = self.rel_pos_h[rel_idx]  # (ws, ws, C)
-            rel_bias_w = self.rel_pos_w[rel_idx]  # (ws, ws, C)
-            rel_bias = rel_bias_h[:, None, :, None, :] + rel_bias_w[None, :, None, :, :]  # (ws, ws, ws, ws, C)
-            rel_bias = rel_bias.mean(-1).reshape(window_area, window_area)  # (WA, WA)
+            # 最极限：全局注意力（无窗口、无分块），追求最高精度
+            q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
             
             attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
-            attn = attn + rel_bias
             attn = F.softmax(attn, dim=-1)
             
-            out_flat = torch.matmul(attn, v_flat)
-            out = out_flat.permute(0, 2, 1).reshape(-1, C, window_size, window_size)
-            out = out.reshape(B, h_windows, w_windows, C, window_size, window_size)
-            out = out.permute(0, 3, 1, 4, 2, 5).reshape(B, C, H_pad, W_pad)
-            
-            if h_pad > 0 or w_pad > 0:
-                out = out[:, :, :H, :W]
+            out_flat = torch.matmul(attn, v_flat)  # (B, HW, C)
+            out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)
             
             out = self.proj(out)
             out = out + x
@@ -160,15 +122,22 @@ class CrossScaleAttention(nn.Module):
         self.use_pos_encoding = use_pos_encoding
         self.align_main = nn.Conv2d(in_main, in_small, 1)
         
-        # 学习融合权重而不是固定的位置编码
-        self.fusion_weight = nn.Parameter(torch.ones(1, 1, 1, 1) * 0.5)
+        # 可学习门控
+        self.gate = nn.Sequential(
+            nn.Conv2d(in_small * 2, in_small, 1, bias=False),
+            nn.BatchNorm2d(in_small),
+            nn.Sigmoid()
+        )
         
         if use_attention:
             self.attn_small = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
         
-        # 融合层：深度可分离 3x3 + 1x1 (恢复表达能力，同时控制参数量)
+        # 融合层：常规 3x3 -> 3x3 -> 1x1 提升表达
         self.fuse = nn.Sequential(
-            nn.Conv2d(in_small * 2, in_small * 2, 3, padding=1, groups=in_small * 2, bias=False),
+            nn.Conv2d(in_small * 2, in_small * 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(in_small * 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_small * 2, in_small * 2, 3, padding=1, bias=False),
             nn.BatchNorm2d(in_small * 2),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_small * 2, in_small, 1, bias=False),
@@ -187,15 +156,31 @@ class CrossScaleAttention(nn.Module):
         if self.use_attention:
             # 优化：只对小特征应用注意力，减少计算量
             small_attn = self.attn_small(small_feat)
-            # 直接融合，不创建额外的中间张量
-            fused = small_attn * self.fusion_weight + main_feat * (1 - self.fusion_weight)
-            # 优化：减少拼接的张量数量，只拼接融合结果和主特征
+            gate = self.gate(torch.cat([small_attn, main_feat], dim=1))
+            fused = small_attn * gate + main_feat * (1 - gate)
             return self.fuse(torch.cat([fused, main_feat], dim=1))
         else:
             # 不使用注意力时的简单融合
-            fused = small_feat * self.fusion_weight + main_feat * (1 - self.fusion_weight)
-            # 优化：只拼接融合结果和主特征
+            gate = self.gate(torch.cat([small_feat, main_feat], dim=1))
+            fused = small_feat * gate + main_feat * (1 - gate)
             return self.fuse(torch.cat([fused, main_feat], dim=1))
+
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, channels // reduction, 1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, 1, bias=True),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        w = self.pool(x)
+        w = self.fc(w)
+        return x * w
 
 # 主干结构
 class BackboneWithSmallBranch(nn.Module):
@@ -330,6 +315,10 @@ class YOLOv11SmallObjectDetector(nn.Module):
             nn.Conv2d(128, 128, 3, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            SEBlock(128),
             nn.Conv2d(128, no, 1)  # (nc + reg_max * 4)
         )
         
@@ -340,6 +329,10 @@ class YOLOv11SmallObjectDetector(nn.Module):
             nn.Conv2d(256, 256, 3, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            SEBlock(256),
             nn.Conv2d(256, no, 1)  # (nc + reg_max * 4)
         )
         
@@ -350,6 +343,10 @@ class YOLOv11SmallObjectDetector(nn.Module):
             nn.Conv2d(512, 512, 3, padding=1, bias=False),
             nn.BatchNorm2d(512),
             nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, 3, padding=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            SEBlock(512),
             nn.Conv2d(512, no, 1)  # (nc + reg_max * 4)
         )
         
