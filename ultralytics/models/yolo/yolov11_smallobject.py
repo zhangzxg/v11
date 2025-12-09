@@ -315,10 +315,6 @@ class YOLOv11SmallObjectDetector(nn.Module):
             nn.Conv2d(128, 128, 3, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, 3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            SEBlock(128),
             nn.Conv2d(128, no, 1)  # (nc + reg_max * 4)
         )
         
@@ -329,10 +325,6 @@ class YOLOv11SmallObjectDetector(nn.Module):
             nn.Conv2d(256, 256, 3, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, 3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            SEBlock(256),
             nn.Conv2d(256, no, 1)  # (nc + reg_max * 4)
         )
         
@@ -343,10 +335,6 @@ class YOLOv11SmallObjectDetector(nn.Module):
             nn.Conv2d(512, 512, 3, padding=1, bias=False),
             nn.BatchNorm2d(512),
             nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, 3, padding=1, bias=False),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            SEBlock(512),
             nn.Conv2d(512, no, 1)  # (nc + reg_max * 4)
         )
         
