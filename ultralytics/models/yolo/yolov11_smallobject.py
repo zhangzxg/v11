@@ -115,65 +115,16 @@ class LocalAttention(nn.Module):
             qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
-            window_threshold = 8192  # 约对应 P2 160x160，超过则用窗口以控显存
-            if H * W > window_threshold:
-                window_size = self.window_size
-                h_windows = (H + window_size - 1) // window_size
-                w_windows = (W + window_size - 1) // window_size
-                h_pad = h_windows * window_size - H
-                w_pad = w_windows * window_size - W
-                
-                if h_pad > 0 or w_pad > 0:
-                    q = F.pad(q, (0, w_pad, 0, h_pad), mode='reflect')
-                    k = F.pad(k, (0, w_pad, 0, h_pad), mode='reflect')
-                    v = F.pad(v, (0, w_pad, 0, h_pad), mode='reflect')
-                    H_pad = H + h_pad
-                    W_pad = W + w_pad
-                else:
-                    H_pad, W_pad = H, W
-                
-                q = q.reshape(B, C, h_windows, window_size, w_windows, window_size)
-                k = k.reshape(B, C, h_windows, window_size, w_windows, window_size)
-                v = v.reshape(B, C, h_windows, window_size, w_windows, window_size)
-                
-                q = q.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-                k = k.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-                v = v.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
-                
-                window_area = window_size * window_size
-                q_flat = q.reshape(-1, C, window_area).permute(0, 2, 1)
-                k_flat = k.reshape(-1, C, window_area).permute(0, 2, 1)
-                v_flat = v.reshape(-1, C, window_area).permute(0, 2, 1)
-                
-                coords = torch.arange(window_size, device=q.device)
-                rel_idx = coords[None, :] - coords[:, None] + window_size - 1
-                rel_bias_h = self.rel_pos_h[rel_idx]
-                rel_bias_w = self.rel_pos_w[rel_idx]
-                rel_bias = rel_bias_h[:, None, :, None, :] + rel_bias_w[None, :, None, :, :]
-                rel_bias = rel_bias.mean(-1).reshape(window_area, window_area)
-                
-                attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
-                attn = attn + rel_bias
-                attn = F.softmax(attn, dim=-1)
-                
-                out_flat = torch.matmul(attn, v_flat)
-                out = out_flat.permute(0, 2, 1).reshape(-1, C, window_size, window_size)
-                out = out.reshape(B, h_windows, w_windows, C, window_size, window_size)
-                out = out.permute(0, 3, 1, 4, 2, 5).reshape(B, C, H_pad, W_pad)
-                
-                if h_pad > 0 or w_pad > 0:
-                    out = out[:, :, :H, :W]
-            else:
-                # 较小特征图保持全局注意力（不分块），追求精度
-                q_flat = q.reshape(B, C, -1).permute(0, 2, 1)
-                k_flat = k.reshape(B, C, -1).permute(0, 2, 1)
-                v_flat = v.reshape(B, C, -1).permute(0, 2, 1)
-                
-                attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
-                attn = F.softmax(attn, dim=-1)
-                
-                out_flat = torch.matmul(attn, v_flat)
-                out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)
+            # A1: 全尺度全局注意力（无窗口、无分块），追求精度
+            q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+            
+            attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
+            attn = F.softmax(attn, dim=-1)
+            
+            out_flat = torch.matmul(attn, v_flat)
+            out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)
             
             out = self.proj(out)
             out = out + x
