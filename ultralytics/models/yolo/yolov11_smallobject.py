@@ -27,31 +27,50 @@ class GhostModule(nn.Module):
         x2 = self.cheap_operation(x1)
         return torch.cat([x1, x2], dim=1)
 
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, channels // reduction, 1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, 1, bias=True),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        w = self.pool(x)
+        w = self.fc(w)
+        return x * w
+
 # 小目标分支
 class SmallObjectBranch(nn.Module):
     def __init__(self, in_channels, out_channels, use_ghost=True):
         super().__init__()
         if use_ghost:
-            # 恢复3层完整Ghost模块以保证精度
+            # 加宽前两层，第三层改标准卷积，末尾加入 SE 提升表达
             self.block = nn.Sequential(
-                GhostModule(in_channels, out_channels),
-                GhostModule(out_channels, out_channels),
-                GhostModule(out_channels, out_channels),
-                nn.Conv2d(out_channels, out_channels, 1, bias=False),
-                nn.BatchNorm2d(out_channels)
+                GhostModule(in_channels, 96),
+                GhostModule(96, 128),
+                nn.Conv2d(128, 96, 3, padding=1, bias=False),
+                nn.BatchNorm2d(96),
+                nn.ReLU(inplace=True),
+                SEBlock(96)
             )
         else:
             # 使用标准卷积替代Ghost模块
-            # 平衡精度和内存：保持2.5层的深度
             self.block = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
+                nn.Conv2d(in_channels, 96, 3, padding=1, bias=False),
+                nn.BatchNorm2d(96),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
+                nn.Conv2d(96, 128, 3, padding=1, bias=False),
+                nn.BatchNorm2d(128),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(out_channels, out_channels, 1, bias=False),
-                nn.BatchNorm2d(out_channels)
+                nn.Conv2d(128, 96, 3, padding=1, bias=False),
+                nn.BatchNorm2d(96),
+                nn.ReLU(inplace=True),
+                SEBlock(96)
             )
         
         # 如果输入输出通道数相同，添加残差连接
