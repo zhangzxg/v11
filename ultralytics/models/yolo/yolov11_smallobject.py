@@ -53,10 +53,10 @@ class SmallObjectBranch(nn.Module):
             self.block = nn.Sequential(
                 GhostModule(in_channels, 96),
                 GhostModule(96, 128),
-                nn.Conv2d(128, 96, 3, padding=1, bias=False),
-                nn.BatchNorm2d(96),
+                nn.Conv2d(128, out_channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
                 nn.ReLU(inplace=True),
-                SEBlock(96)
+                SEBlock(out_channels)
             )
         else:
             # 使用标准卷积替代Ghost模块
@@ -67,10 +67,10 @@ class SmallObjectBranch(nn.Module):
                 nn.Conv2d(96, 128, 3, padding=1, bias=False),
                 nn.BatchNorm2d(128),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(128, 96, 3, padding=1, bias=False),
-                nn.BatchNorm2d(96),
+                nn.Conv2d(128, out_channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
                 nn.ReLU(inplace=True),
-                SEBlock(96)
+                SEBlock(out_channels)
             )
         
         # 如果输入输出通道数相同，添加残差连接
