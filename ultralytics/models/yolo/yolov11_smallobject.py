@@ -49,25 +49,25 @@ class SmallObjectBranch(nn.Module):
     def __init__(self, in_channels, out_channels, use_ghost=True):
         super().__init__()
         if use_ghost:
-            # 加宽前两层，第三层改标准卷积，末尾加入 SE 提升表达
+            # 加宽：128 -> 160 -> 128，末尾 SE
             self.block = nn.Sequential(
-                GhostModule(in_channels, 96),
-                GhostModule(96, 128),
-                nn.Conv2d(128, out_channels, 3, padding=1, bias=False),
+                GhostModule(in_channels, 128),
+                GhostModule(128, 160),
+                nn.Conv2d(160, out_channels, 3, padding=1, bias=False),
                 nn.BatchNorm2d(out_channels),
                 nn.ReLU(inplace=True),
                 SEBlock(out_channels)
             )
         else:
-            # 使用标准卷积替代Ghost模块
+            # 卷积版同样加宽
             self.block = nn.Sequential(
-                nn.Conv2d(in_channels, 96, 3, padding=1, bias=False),
-                nn.BatchNorm2d(96),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(96, 128, 3, padding=1, bias=False),
+                nn.Conv2d(in_channels, 128, 3, padding=1, bias=False),
                 nn.BatchNorm2d(128),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(128, out_channels, 3, padding=1, bias=False),
+                nn.Conv2d(128, 160, 3, padding=1, bias=False),
+                nn.BatchNorm2d(160),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(160, out_channels, 3, padding=1, bias=False),
                 nn.BatchNorm2d(out_channels),
                 nn.ReLU(inplace=True),
                 SEBlock(out_channels)
@@ -115,16 +115,73 @@ class LocalAttention(nn.Module):
             qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
-            # A1: 全尺度全局注意力（无窗口、无分块），追求精度
-            q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
-            k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
-            v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
-            
-            attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
-            attn = F.softmax(attn, dim=-1)
-            
-            out_flat = torch.matmul(attn, v_flat)
-            out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)
+            window_threshold = 8192  # 约 P2=160x160，以上用窗口避免 OOM
+            if H * W > window_threshold:
+                window_size = 5  # 更小窗口，控显存
+                h_windows = (H + window_size - 1) // window_size
+                w_windows = (W + window_size - 1) // window_size
+                h_pad = h_windows * window_size - H
+                w_pad = w_windows * window_size - W
+                
+                if h_pad > 0 or w_pad > 0:
+                    q = F.pad(q, (0, w_pad, 0, h_pad), mode='reflect')
+                    k = F.pad(k, (0, w_pad, 0, h_pad), mode='reflect')
+                    v = F.pad(v, (0, w_pad, 0, h_pad), mode='reflect')
+                    H_pad = H + h_pad
+                    W_pad = W + w_pad
+                else:
+                    H_pad, W_pad = H, W
+                
+                q = q.reshape(B, C, h_windows, window_size, w_windows, window_size)
+                k = k.reshape(B, C, h_windows, window_size, w_windows, window_size)
+                v = v.reshape(B, C, h_windows, window_size, w_windows, window_size)
+                
+                q = q.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
+                k = k.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
+                v = v.permute(0, 2, 4, 1, 3, 5).reshape(B * h_windows * w_windows, C, window_size, window_size)
+                
+                window_area = window_size * window_size
+                q_flat = q.reshape(-1, C, window_area).permute(0, 2, 1)
+                k_flat = k.reshape(-1, C, window_area).permute(0, 2, 1)
+                v_flat = v.reshape(-1, C, window_area).permute(0, 2, 1)
+                
+                coords = torch.arange(window_size, device=q.device)
+                rel_idx = coords[None, :] - coords[:, None] + window_size - 1
+                rel_bias_h = self.rel_pos_h[rel_idx]
+                rel_bias_w = self.rel_pos_w[rel_idx]
+                rel_bias = rel_bias_h[:, None, :, None, :] + rel_bias_w[None, :, None, :, :]
+                rel_bias = rel_bias.mean(-1).reshape(window_area, window_area)
+                
+                attn = torch.matmul(q_flat, k_flat.permute(0, 2, 1)) / (self.dim ** 0.5)
+                attn = attn + rel_bias
+                attn = F.softmax(attn, dim=-1)
+                
+                out_flat = torch.matmul(attn, v_flat)
+                out = out_flat.permute(0, 2, 1).reshape(-1, C, window_size, window_size)
+                out = out.reshape(B, h_windows, w_windows, C, window_size, window_size)
+                out = out.permute(0, 3, 1, 4, 2, 5).reshape(B, C, H_pad, W_pad)
+                
+                if h_pad > 0 or w_pad > 0:
+                    out = out[:, :, :H, :W]
+            else:
+                # 较小特征图：全局注意力，允许分块降低峰值
+                q_flat = q.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+                k_flat = k.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+                v_flat = v.reshape(B, C, -1).permute(0, 2, 1)  # (B, HW, C)
+                
+                k_t = k_flat.permute(0, 2, 1)
+                chunk_size = 1024
+                outputs = []
+                scale = self.dim ** 0.5
+                for start in range(0, q_flat.size(1), chunk_size):
+                    end = min(start + chunk_size, q_flat.size(1))
+                    q_chunk = q_flat[:, start:end, :]
+                    attn_chunk = torch.matmul(q_chunk, k_t) / scale
+                    attn_chunk = F.softmax(attn_chunk, dim=-1)
+                    out_chunk = torch.matmul(attn_chunk, v_flat)
+                    outputs.append(out_chunk)
+                out_flat = torch.cat(outputs, dim=1)
+                out = out_flat.permute(0, 2, 1).reshape(B, C, H, W)
             
             out = self.proj(out)
             out = out + x
@@ -151,15 +208,15 @@ class CrossScaleAttention(nn.Module):
         if use_attention:
             self.attn_small = LocalAttention(in_small, use_attention=True, use_pos_encoding=use_pos_encoding)
         
-        # 融合层：常规 3x3 -> 3x3 -> 1x1 提升表达
+        # 融合层：加宽中间通道（3x3 -> 3x3 -> 1x1）
         self.fuse = nn.Sequential(
-            nn.Conv2d(in_small * 2, in_small * 2, 3, padding=1, bias=False),
-            nn.BatchNorm2d(in_small * 2),
+            nn.Conv2d(in_small * 2, 192, 3, padding=1, bias=False),
+            nn.BatchNorm2d(192),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_small * 2, in_small * 2, 3, padding=1, bias=False),
-            nn.BatchNorm2d(in_small * 2),
+            nn.Conv2d(192, 192, 3, padding=1, bias=False),
+            nn.BatchNorm2d(192),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_small * 2, in_small, 1, bias=False),
+            nn.Conv2d(192, in_small, 1, bias=False),
             nn.BatchNorm2d(in_small),
             nn.ReLU(inplace=True)
         )
