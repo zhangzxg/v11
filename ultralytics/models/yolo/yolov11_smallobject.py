@@ -115,9 +115,9 @@ class LocalAttention(nn.Module):
             qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
-            window_threshold = 8192  # 约 P2=160x160，以上用窗口避免 OOM
+            window_threshold = 2000  # P2/P3 使用窗口，P4 走全局
             if H * W > window_threshold:
-                window_size = 5  # 更小窗口，控显存
+                window_size = 5  # 窗口注意力
                 h_windows = (H + window_size - 1) // window_size
                 w_windows = (W + window_size - 1) // window_size
                 h_pad = h_windows * window_size - H
@@ -210,13 +210,13 @@ class CrossScaleAttention(nn.Module):
         
         # 融合层：加宽中间通道（3x3 -> 3x3 -> 1x1）
         self.fuse = nn.Sequential(
-            nn.Conv2d(in_small * 2, 256, 3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(in_small * 2, 192, 3, padding=1, bias=False),
+            nn.BatchNorm2d(192),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, 3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(192, 192, 3, padding=1, bias=False),
+            nn.BatchNorm2d(192),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, in_small, 1, bias=False),
+            nn.Conv2d(192, in_small, 1, bias=False),
             nn.BatchNorm2d(in_small),
             nn.ReLU(inplace=True)
         )

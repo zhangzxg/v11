@@ -6,6 +6,30 @@
 
 ## ✨ 核心改进特性
 
+### 🔥 我们的融合创新（大模型式设计思路）
+1) **自适应局部-全局注意力编排**：类似大模型的 token 混合策略，P2/P3 用窗口注意力 (ws=5) + 相对位置编码，P4 全局注意力支持分块 softmax（chunk=1024），显存可控但保留全局上下文。  
+2) **跨尺度门控混合器（Gated Mixer）**：借鉴大模型的 gated fusion，将主分支/小分支特征通过可学习门控自适应加权，融合卷积 3×3→3×3→1×1，通道加宽至 192，提升跨尺度 token 交互能力。  
+3) **小目标强化链路 + 加宽解码头**：小分支 128→160→128 + SE，提升细粒度 token 表达；检测头通道加宽至 160/320/640（双 3×3），对应多尺度解码类似大模型的多头输出。  
+4) **可调的“显存-精度”旋钮**：窗口阈值、chunk、通道宽度均为可学习/可配置超参，支持按算力弹性裁剪，保持可复现的工程落地。  
+代码落地：`LocalAttention`、`CrossScaleAttention`、`SmallObjectBranch`、`head1/2/3` 均在 `ultralytics/models/yolo/yolov11_smallobject.py` 中实现。
+
+> 参考的大模型算法灵感：  
+> - **窗口注意力 + 相对位置偏置**：参考 Swin Transformer 对局部 token 的建模方式。  
+> - **跨尺度 gated fusion**：参考 CrossViT/TokenFusion 这类多尺度 token 融合，并加入 Gated MLP/Mixer 风格的门控混合。  
+> - **解码头加宽**：借鉴大模型多头解码与通道扩展策略，通过更宽的多尺度头增强表示容量。  
+
+#### 公式与差异说明（对标大模型）
+- Swin 窗口注意力：
+![alt text](assets/image.png)
+  - 我们：P2/P3 固定窗口 $5\times5$（含相对位置偏置）；P4 采用全局但分块 softmax（chunk=1024），公式按块计算
+![alt text](assets/gongsi2.png)
+  提供显存可调入口；不使用 Swin 的 shift，保持实现简单。  
+- CrossViT/TokenFusion：多尺度 token 拼接后做注意力/MLP。  
+  - 我们门控融合：
+  ![alt text](assets/men.png)
+  ，再经 331 卷积（通道 192）。区别在于：1）先用可学习门控而非直接拼接注意力；2）用加宽卷积链替代 MLP/单层融合，强调跨尺度局部几何。  
+- 解码头（多尺度通道扩展）：两层 3，通道160,320,640。区别在于相对 YOLO 原版/典型大模型解码头的通道更宽，提升多尺度表示容量而非仅依赖更多 head 数。
+
 ### 1. **GhostModule - 轻量级特征提取**
 - **来源**: FBRT-YOLO (Yao Xiao et al., AAAI 2025)
 - **功能**: 通过 Ghost 操作实现高效特征提取，减少参数量和计算量
