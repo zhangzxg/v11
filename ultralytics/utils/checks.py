@@ -789,24 +789,23 @@ def check_amp(model):
         try:
             import numpy as np
             from PIL import Image
+
             ASSETS.mkdir(parents=True, exist_ok=True)
             # Create a simple test image (640x640 RGB)
             dummy_img = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
             Image.fromarray(dummy_img).save(im)
         except Exception:
             # If image creation fails, skip AMP check
-            LOGGER.warning(
-                f"{prefix}checks skipped. Unable to create test image for AMP checks. {warning_msg}"
-            )
+            LOGGER.warning(f"{prefix}checks skipped. Unable to create test image for AMP checks. {warning_msg}")
             return True  # Assume AMP is OK if we can't test
-    
+
     LOGGER.info(f"{prefix}running Automatic Mixed Precision (AMP) checks...")
     warning_msg = "Setting 'amp=True'. If you experience zero-mAP or NaN losses you can disable AMP with amp=False."
-    
+
     # Try to use the provided model first (for custom models)
     try:
         # Check if model is a DetectionModel (has __call__ method for inference)
-        if hasattr(model, '__call__') and hasattr(model, 'model'):
+        if hasattr(model, "__call__") and hasattr(model, "model"):
             # Try to use the provided model for AMP check
             assert amp_allclose(model, im)
             LOGGER.info(f"{prefix}checks passed ✅ (using provided model)")

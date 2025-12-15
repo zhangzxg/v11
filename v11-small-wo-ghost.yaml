@@ -1,12 +1,12 @@
 # 消融实验：不使用Ghost模块（使用标准卷积替代）
 # Parameters
-nc: 80   # number of classes
+nc: 80 # number of classes
 
 # Ablation study configuration
 ablation:
   use_teacher: false
   use_small_branch: true
-  use_ghost: false                # ❌ 关闭Ghost模块
+  use_ghost: false # ❌ 关闭Ghost模块
   use_attention: true
   use_pos_encoding: true
   use_cross_scale_fusion: true
@@ -18,4 +18,3 @@ backbone:
 # Head
 head:
   - [-1, 1, Detect, [nc]]
-

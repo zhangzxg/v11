@@ -166,7 +166,7 @@ class BaseModel(torch.nn.Module):
             (torch.Tensor): The last output of the model.
         """
         # Handle custom models like YOLOv11SmallObjectDetector that return multiple values
-        if not isinstance(self.model, torch.nn.Sequential) and hasattr(self.model, '__class__'):
+        if not isinstance(self.model, torch.nn.Sequential) and hasattr(self.model, "__class__"):
             if self.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
                 result = self.model(x)
                 # Model now returns (outputs_list, loss_feat, loss_output) or just outputs_list
@@ -176,55 +176,55 @@ class BaseModel(torch.nn.Module):
                     outputs_list = result  # Already a list of outputs
                 # Cache raw multi-scale outputs for loss computation during eval
                 self.model._last_outputs = outputs_list
-                
+
                 # Convert multi-scale feature maps to NMS format (similar to Detect._inference)
                 # Custom model has 3 scales: P2/4 (stride=4), P3/8 (stride=8), P4/16 (stride=16)
                 # Only convert to NMS format when model is in eval mode (for validation/prediction)
                 if not self.model.training:
                     from ultralytics.nn.modules.block import DFL
                     from ultralytics.utils.tal import dist2bbox, make_anchors
-                    
+
                     # Get model parameters
                     nc = self.model.nc
                     reg_max = 16
                     no = nc + reg_max * 4
                     strides = torch.tensor([4.0, 8.0, 16.0], device=outputs_list[0].device)
-                    
+
                     # Reshape and concatenate multi-scale outputs
                     shape = outputs_list[0].shape  # BCHW
                     x_cat = torch.cat([xi.view(shape[0], no, -1) for xi in outputs_list], 2)
-                    
+
                     # Generate anchors and strides
                     anchors, strides_tensor = make_anchors(outputs_list, strides, 0.5)
                     # anchors: (N, 2), strides_tensor: (N, 1)
                     # Transpose to match Detect._inference format: (2, N) and (1, N)
                     anchors = anchors.transpose(0, 1)  # (2, N)
                     strides_tensor = strides_tensor.transpose(0, 1)  # (1, N)
-                    
+
                     # Split box and class predictions
                     box, cls = x_cat.split((reg_max * 4, nc), 1)  # box: (B, reg_max*4, N), cls: (B, nc, N)
-                    
+
                     # Decode boxes using DFL and dist2bbox (same as Detect._inference)
                     # Create DFL module and ensure it matches input dtype
                     dfl = DFL(reg_max).to(device=box.device, dtype=box.dtype)
-                    
+
                     # Apply DFL: (B, reg_max*4, N) -> (B, 4, N)
                     dfl_output = dfl(box)  # (B, 4, N)
-                    
+
                     # Use decode_bboxes logic: dist2bbox with dim=1
                     # anchors.unsqueeze(0): (2, N) -> (1, 2, N)
                     # dist2bbox with dim=1 splits (B, 4, N) along dim=1 into two (B, 2, N)
                     dbox = dist2bbox(dfl_output, anchors.unsqueeze(0), xywh=True, dim=1)  # (B, 4, N)
-                    
+
                     # Multiply by strides: (B, 4, N) * (1, N) -> (B, 4, N)
                     dbox = dbox * strides_tensor  # (B, 4, N) * (1, N) -> (B, 4, N)
-                    
+
                     # Return concatenated predictions: (B, 4+nc, N)
                     return torch.cat((dbox, cls.sigmoid()), 1)
                 else:
                     # Training mode: return list of feature maps
                     return outputs_list
-        
+
         y, dt, embeddings = [], [], []  # outputs
         embed = frozenset(embed) if embed is not None else {-1}
         max_idx = max(embed)
@@ -391,10 +391,10 @@ class BaseModel(torch.nn.Module):
 
         if preds is None:
             preds = self.forward(batch["img"])
-        
+
         # Handle custom models like YOLOv11SmallObjectDetector
         if not isinstance(self.model, (nn.Sequential, list, tuple)):
-            if hasattr(self.model, '__class__') and self.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
+            if hasattr(self.model, "__class__") and self.model.__class__.__name__ == "YOLOv11SmallObjectDetector":
                 # Custom model returns multi-scale outputs for loss. If preds is not already a list of 4D tensors,
                 # try to reuse cached raw outputs saved during the forward pass.
                 if isinstance(preds, tuple):
@@ -411,7 +411,7 @@ class BaseModel(torch.nn.Module):
                         preds = raw
                 if not isinstance(preds, list):
                     preds = [preds] if isinstance(preds, torch.Tensor) else list(preds)
-        
+
         return self.criterion(preds, batch)
 
     def init_criterion(self):
@@ -451,8 +451,9 @@ class DetectionModel(BaseModel):
         super().__init__()
         self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
 
-        if cfg == 'yolov11_smallobject':
+        if cfg == "yolov11_smallobject":
             from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
+
             # Get nc from parameter or YAML
             model_nc = nc if nc is not None else (self.yaml.get("nc", 10) if isinstance(self.yaml, dict) else 10)
             # Get ablation config from YAML if available
@@ -464,16 +465,18 @@ class DetectionModel(BaseModel):
                 use_attention=ablation_config.get("use_attention", True),
                 use_pos_encoding=ablation_config.get("use_pos_encoding", True),
                 use_cross_scale_fusion=ablation_config.get("use_cross_scale_fusion", True),
-                nc=model_nc
+                nc=model_nc,
             )
-        elif (isinstance(self.yaml, dict) and 
-              "backbone" in self.yaml and 
-              len(self.yaml["backbone"]) > 0 and 
-              len(self.yaml["backbone"][0]) > 2 and
-              self.yaml["backbone"][0][2] == "YOLOv11SmallObjectDetector"):
+        elif (
+            isinstance(self.yaml, dict)
+            and "backbone" in self.yaml
+            and len(self.yaml["backbone"]) > 0
+            and len(self.yaml["backbone"][0]) > 2
+            and self.yaml["backbone"][0][2] == "YOLOv11SmallObjectDetector"
+        ):
             # Handle YAML file with YOLOv11SmallObjectDetector custom module
             from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
-            
+
             # 从YAML读取消融实验配置参数
             ablation_config = self.yaml.get("ablation", {})
             use_teacher = ablation_config.get("use_teacher", False)
@@ -482,7 +485,7 @@ class DetectionModel(BaseModel):
             use_attention = ablation_config.get("use_attention", True)
             use_pos_encoding = ablation_config.get("use_pos_encoding", True)
             use_cross_scale_fusion = ablation_config.get("use_cross_scale_fusion", True)
-            
+
             # 获取类别数
             # Priority: 1) nc parameter (ALWAYS override YAML), 2) yaml nc
             # IMPORTANT: For custom models, nc parameter MUST override YAML to ensure correct head channels
@@ -490,11 +493,11 @@ class DetectionModel(BaseModel):
                 # nc parameter is provided, ALWAYS use it and update YAML
                 model_nc = nc
                 if isinstance(self.yaml, dict):
-                    self.yaml['nc'] = nc  # Force update YAML to match
+                    self.yaml["nc"] = nc  # Force update YAML to match
             else:
                 # No nc parameter, get from YAML
                 model_nc = self.yaml.get("nc", 10) if isinstance(self.yaml, dict) else 10
-            
+
             self.model = YOLOv11SmallObjectDetector(
                 use_teacher=use_teacher,
                 use_small_branch=use_small_branch,
@@ -502,12 +505,12 @@ class DetectionModel(BaseModel):
                 use_attention=use_attention,
                 use_pos_encoding=use_pos_encoding,
                 use_cross_scale_fusion=use_cross_scale_fusion,
-                nc=model_nc
+                nc=model_nc,
             )
             # Set nc attribute for DetectionModel
             self.nc = model_nc
             # Verify that the custom model has the correct nc
-            if hasattr(self.model, 'nc') and self.model.nc != model_nc:
+            if hasattr(self.model, "nc") and self.model.nc != model_nc:
                 LOGGER.warning(
                     f"Warning: Custom model has nc={self.model.nc}, but expected nc={model_nc}. "
                     f"This may cause dimension mismatches in loss calculation."
@@ -534,13 +537,13 @@ class DetectionModel(BaseModel):
         self.end2end = getattr(self.model[-1], "end2end", False) if isinstance(self.model, nn.Sequential) else False
 
         # 推理 stride 自动估计（兼容新旧 Detect 类）
-        if hasattr(self.model, '__len__') and isinstance(self.model[-1], Detect):
+        if hasattr(self.model, "__len__") and isinstance(self.model[-1], Detect):
             m = self.model[-1]
             s = 256
             m.inplace = self.inplace
 
             def _forward(x):
-                return self.forward(x)[0] if hasattr(self, 'forward') else self.model(x)
+                return self.forward(x)[0] if hasattr(self, "forward") else self.model(x)
 
             self.model.eval()
             m.training = True
@@ -1727,6 +1730,7 @@ def parse_model(d, ch, verbose=True):
         # Handle custom modules like YOLOv11SmallObjectDetector
         if m == "YOLOv11SmallObjectDetector" and m not in globals():
             from ultralytics.models.yolo.yolov11_smallobject import YOLOv11SmallObjectDetector
+
             m = YOLOv11SmallObjectDetector
         else:
             m = (
@@ -1741,7 +1745,7 @@ def parse_model(d, ch, verbose=True):
                 with contextlib.suppress(ValueError):
                     args[j] = locals()[a] if a in locals() else ast.literal_eval(a)
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
-        
+
         # Handle custom modules like YOLOv11SmallObjectDetector that don't follow standard channel pattern
         if isinstance(m, type) and m.__name__ == "YOLOv11SmallObjectDetector":
             # Skip channel processing for custom modules, instantiate directly
@@ -1752,10 +1756,10 @@ def parse_model(d, ch, verbose=True):
             if verbose:
                 LOGGER.info(f"{i:>3}{-1:>20}{n_:>3}{m_.np:10.0f}  {t:<45}{args!s:<30}")  # print
             layers.append(m_)
-            ch.append(m_.head[-1].out_channels if hasattr(m_, 'head') and len(m_.head) > 0 else ch[-1])
+            ch.append(m_.head[-1].out_channels if hasattr(m_, "head") and len(m_.head) > 0 else ch[-1])
             save.append(i % (len(d["backbone"]) + len(d["head"])))
             continue
-        
+
         if m in base_modules:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)

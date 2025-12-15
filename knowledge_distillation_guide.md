@@ -1,6 +1,7 @@
 ### 在本项目中的作用
 
 知识蒸馏是**可选的改进点**，不是必需的：
+
 - ✅ **没有教师模型时**：可以正常使用所有其他改进点（小目标分支、Ghost模块、注意力机制等）
 - ✅ **有教师模型时**：可以额外使用知识蒸馏进一步提升性能
 
@@ -9,15 +10,17 @@
 ### 场景1: 没有教师模型（推荐新手）
 
 **配置**：
+
 ```yaml
 ablation:
-  use_teacher: false  # 关闭知识蒸馏
+  use_teacher: false # 关闭知识蒸馏
   use_small_branch: true
   use_ghost: true
   # ... 其他改进点
 ```
 
 **说明**：
+
 - 所有架构改进点（小目标分支、Ghost模块、注意力等）都可以正常使用
 - 不需要教师模型，直接训练即可
 - 这是**默认配置**，适合大多数用户
@@ -25,13 +28,15 @@ ablation:
 ### 场景2: 有教师模型（进阶使用）
 
 **配置**：
+
 ```yaml
 ablation:
-  use_teacher: true   # 开启知识蒸馏
+  use_teacher: true # 开启知识蒸馏
   # ... 其他配置
 ```
 
 **说明**：
+
 - 需要预训练的教师模型
 - 训练时会额外计算蒸馏损失
 - 通常能获得更好的性能
@@ -46,10 +51,10 @@ ablation:
 from ultralytics import YOLO
 
 # 加载预训练的YOLO11模型作为教师模型
-teacher_model = YOLO('yolo11x.pt')  # 或 yolo11l.pt, yolo11m.pt 等
+teacher_model = YOLO("yolo11x.pt")  # 或 yolo11l.pt, yolo11m.pt 等
 
 # 训练学生模型时使用教师模型
-student_model = YOLO('v11-small-full.yaml')
+student_model = YOLO("v11-small-full.yaml")
 # 需要修改训练代码以集成教师模型
 ```
 
@@ -61,16 +66,11 @@ student_model = YOLO('v11-small-full.yaml')
 
 ```python
 # 步骤1: 训练教师模型
-teacher = YOLO('yolo11x.yaml')  # 使用更大的模型
-teacher.train(
-    data='v11-data.yaml',
-    epochs=300,
-    imgsz=640,
-    name='teacher'
-)
+teacher = YOLO("yolo11x.yaml")  # 使用更大的模型
+teacher.train(data="v11-data.yaml", epochs=300, imgsz=640, name="teacher")
 
 # 步骤2: 使用训练好的教师模型
-teacher_model = YOLO('runs/train/teacher/weights/best.pt')
+teacher_model = YOLO("runs/train/teacher/weights/best.pt")
 ```
 
 ### 方法3: 使用现有的高性能模型
@@ -84,38 +84,37 @@ teacher_model = YOLO('runs/train/teacher/weights/best.pt')
 ### 方案1: 修改训练脚本（需要自定义Trainer）
 
 ```python
-from ultralytics import YOLO
 import torch
 
+from ultralytics import YOLO
+
 # 加载教师模型
-teacher_model = YOLO('yolo11x.pt')  # 或你的教师模型路径
+teacher_model = YOLO("yolo11x.pt")  # 或你的教师模型路径
 teacher_model.model.eval()  # 设置为评估模式
 
 # 加载学生模型
-student_model = YOLO('v11-small-full.yaml')
+student_model = YOLO("v11-small-full.yaml")
 
 # 自定义训练循环（简化示例）
 for epoch in range(200):
     for batch in dataloader:
         images, targets = batch
-        
+
         # 教师模型推理（不计算梯度）
         with torch.no_grad():
             teacher_output = teacher_model.model(images)
             # 提取中间特征（需要根据实际模型结构调整）
             teacher_feats = extract_teacher_features(teacher_model.model, images)
-        
+
         # 学生模型推理
         student_output, loss_feat, loss_output = student_model.model(
-            images, 
-            teacher_feats=teacher_feats,
-            teacher_output=teacher_output
+            images, teacher_feats=teacher_feats, teacher_output=teacher_output
         )
-        
+
         # 计算总损失
         detection_loss = compute_detection_loss(student_output, targets)
         total_loss = detection_loss + 0.5 * loss_feat + 0.5 * loss_output
-        
+
         # 反向传播和优化
         optimizer.zero_grad()
         total_loss.backward()
@@ -130,13 +129,8 @@ for epoch in range(200):
 from ultralytics import YOLO
 
 # 直接训练，不使用知识蒸馏
-model = YOLO('v11-small-full.yaml')
-model.train(
-    data='v11-data.yaml',
-    epochs=200,
-    batch=16,
-    imgsz=640
-)
+model = YOLO("v11-small-full.yaml")
+model.train(data="v11-data.yaml", epochs=200, batch=16, imgsz=640)
 ```
 
 这样所有架构改进点都会生效，只是不使用知识蒸馏。
@@ -177,14 +171,15 @@ model.train(
 ## 🎓 总结
 
 **对于大多数用户**：
+
 - ✅ 保持 `use_teacher: false`
 - ✅ 使用所有架构改进点（小目标分支、Ghost模块、注意力等）
 - ✅ 直接训练，无需教师模型
 
 **对于进阶用户**：
+
 - ✅ 训练或获取一个高性能的教师模型
 - ✅ 设置 `use_teacher: true`
 - ✅ 自定义训练循环以集成知识蒸馏
 
 **重要**：知识蒸馏是**可选的增强功能**，不是必需的。没有教师模型时，所有其他改进点仍然可以正常使用！
-

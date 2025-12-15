@@ -1,15 +1,15 @@
 # 基线模型（关闭所有改进点，仅保留基础结构）
 # Parameters
-nc: 80   # number of classes
+nc: 80 # number of classes
 
 # Ablation study configuration
 ablation:
   use_teacher: false
-  use_small_branch: false         # ❌ 关闭小目标分支
-  use_ghost: false                # ❌ 关闭Ghost模块
-  use_attention: false           # ❌ 关闭注意力机制
-  use_pos_encoding: false        # ❌ 关闭位置编码
-  use_cross_scale_fusion: false  # ❌ 关闭跨尺度融合
+  use_small_branch: false # ❌ 关闭小目标分支
+  use_ghost: false # ❌ 关闭Ghost模块
+  use_attention: false # ❌ 关闭注意力机制
+  use_pos_encoding: false # ❌ 关闭位置编码
+  use_cross_scale_fusion: false # ❌ 关闭跨尺度融合
 
 # Backbone
 backbone:
@@ -18,4 +18,3 @@ backbone:
 # Head
 head:
   - [-1, 1, Detect, [nc]]
-
