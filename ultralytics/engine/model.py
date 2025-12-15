@@ -768,7 +768,9 @@ class Model(torch.nn.Module):
         self.trainer = (trainer or self._smart_load("trainer"))(overrides=args, _callbacks=self.callbacks)
         if not args.get("resume"):  # manually set model only if not resuming
             # Use original config file path (self.cfg) instead of self.model.yaml to ensure correct nc
-            cfg_for_model = self.cfg if self.cfg else (self.model.yaml if isinstance(self.model.yaml, str) else self.args.model)
+            cfg_for_model = (
+                self.cfg if self.cfg else (self.model.yaml if isinstance(self.model.yaml, str) else self.args.model)
+            )
             self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=cfg_for_model)
             self.model = self.trainer.model
 

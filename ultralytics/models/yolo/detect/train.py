@@ -142,11 +142,12 @@ class DetectionTrainer(BaseTrainer):
         self.model.nc = self.data["nc"]  # attach number of classes to model
         self.model.names = self.data["names"]  # attach class names to model
         self.model.args = self.args  # attach hyperparameters to model
-        
+
         # For custom models, also update the model.model.nc attribute
-        if hasattr(self.model, 'model') and hasattr(self.model.model, 'nc'):
+        if hasattr(self.model, "model") and hasattr(self.model.model, "nc"):
             if self.model.model.nc != self.data["nc"]:
                 from ultralytics.utils import LOGGER
+
                 LOGGER.warning(
                     f"Custom model has nc={self.model.model.nc}, but dataset has nc={self.data['nc']}. "
                     f"Model head was initialized with nc={self.model.model.nc}, which may cause dimension mismatches. "
@@ -154,7 +155,7 @@ class DetectionTrainer(BaseTrainer):
                 )
                 # Update the attribute (though this won't change the head's output channels)
                 self.model.model.nc = self.data["nc"]
-        
+
         # TODO: self.model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc
 
     def get_model(self, cfg: str | None = None, weights: str | None = None, verbose: bool = True):
@@ -173,12 +174,13 @@ class DetectionTrainer(BaseTrainer):
             # Load YAML if it's a string path
             if isinstance(cfg, str):
                 from ultralytics.nn.tasks import yaml_model_load
+
                 yaml_dict = yaml_model_load(cfg)
             elif isinstance(cfg, dict):
                 yaml_dict = cfg
             else:
                 yaml_dict = None
-            
+
             # Check if it's a custom model
             if isinstance(yaml_dict, dict) and "backbone" in yaml_dict:
                 backbone = yaml_dict.get("backbone", [])
@@ -187,7 +189,7 @@ class DetectionTrainer(BaseTrainer):
                         # Force update nc in YAML dict to match dataset
                         yaml_dict["nc"] = self.data["nc"]
                         cfg = yaml_dict  # Use updated dict
-        
+
         model = DetectionModel(cfg, nc=self.data["nc"], ch=self.data["channels"], verbose=verbose and RANK == -1)
         if weights:
             model.load(weights)

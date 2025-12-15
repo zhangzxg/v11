@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
 from types import SimpleNamespace
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -199,7 +199,7 @@ class v8DetectionLoss:
     def __init__(self, model, tal_topk: int = 10):  # model must be de-paralleled
         """Initialize v8DetectionLoss with model parameters and task-aligned assignment settings."""
         device = next(model.parameters()).device  # get model device
-        h = getattr(model, 'args', {})  # hyperparameters (use empty dict if args not set)
+        h = getattr(model, "args", {})  # hyperparameters (use empty dict if args not set)
 
         self.device = device
         self.hyp = SimpleNamespace(**h) if isinstance(h, dict) else h
@@ -362,10 +362,8 @@ class v8DetectionLoss:
         reshaped_feats = []
         for i, xi in enumerate(feats):
             if len(xi.shape) != 4:
-                raise RuntimeError(
-                    f"Feature map {i} has unexpected shape {xi.shape}, expected 4D tensor (B, C, H, W)"
-                )
-            B, C, H, W = xi.shape
+                raise RuntimeError(f"Feature map {i} has unexpected shape {xi.shape}, expected 4D tensor (B, C, H, W)")
+            B, C, _H, _W = xi.shape
             if C != self.no:
                 raise RuntimeError(
                     f"Feature map {i} shape mismatch: got {xi.shape}, expected channels={self.no} "
@@ -373,15 +371,13 @@ class v8DetectionLoss:
                     f"Please check that model head outputs {self.no} channels per feature map."
                 )
             if B != batch_size:
-                raise RuntimeError(
-                    f"Feature map {i} batch size {B} doesn't match expected {batch_size}"
-                )
+                raise RuntimeError(f"Feature map {i} batch size {B} doesn't match expected {batch_size}")
             reshaped_feats.append(xi.view(B, self.no, -1))
 
         # Concatenate along spatial dimension (dim=2)
         x_cat = torch.cat(reshaped_feats, 2)
-        pred_distri, pred_scores = x_cat.split((self.reg_max * 4, self.nc), 1) if self.reg_max > 1 else x_cat.split(
-            (4, self.nc), 1
+        pred_distri, pred_scores = (
+            x_cat.split((self.reg_max * 4, self.nc), 1) if self.reg_max > 1 else x_cat.split((4, self.nc), 1)
         )
 
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
@@ -405,7 +401,7 @@ class v8DetectionLoss:
                 f"Dimension mismatch: anchor_points has {anchor_count} points, "
                 f"but pred_distri has {actual_spatial} spatial positions. "
                 f"Expected {total_spatial} total spatial positions from feature maps: "
-                f"{[f'{f.shape[2]}x{f.shape[3]}={f.shape[2]*f.shape[3]}' for f in feats]}. "
+                f"{[f'{f.shape[2]}x{f.shape[3]}={f.shape[2] * f.shape[3]}' for f in feats]}. "
                 f"This suggests stride configuration ({len(stride_values)} strides) "
                 f"did not match the number of feature maps ({len(feats)})."
             )

@@ -2,20 +2,20 @@
 # Parameters
 # 注意: nc 会在训练时从数据集 YAML 文件中自动获取，这里只是一个占位符
 # 实际训练时会使用 data.yaml 中的 nc 值（例如 v11-data.yaml 中的 nc: 10）
-nc: 10  # number of classes (placeholder, will be overridden by dataset nc during training)
+nc: 10 # number of classes (placeholder, will be overridden by dataset nc during training)
 
 # Ablation study configuration
 ablation:
   # 注意: use_teacher 是训练方式，不是架构改进点
   # 默认关闭是因为需要预训练教师模型，如需使用请设置为 true
-  use_teacher: false              # 是否使用知识蒸馏 (false=关闭, true=开启)
-  
+  use_teacher: false # 是否使用知识蒸馏 (false=关闭, true=开启)
+
   # 以下为架构改进点（全部开启）
-  use_small_branch: true          # ✅ 使用小目标分支
-  use_ghost: true                 # ✅ 使用Ghost模块
-  use_attention: true             # ✅ 使用注意力机制
-  use_pos_encoding: true          # ✅ 使用位置编码
-  use_cross_scale_fusion: true    # ✅ 使用跨尺度融合
+  use_small_branch: true # ✅ 使用小目标分支
+  use_ghost: true # ✅ 使用Ghost模块
+  use_attention: true # ✅ 使用注意力机制
+  use_pos_encoding: true # ✅ 使用位置编码
+  use_cross_scale_fusion: true # ✅ 使用跨尺度融合
 
 # Backbone
 backbone:
@@ -23,5 +23,5 @@ backbone:
 
 # Head (minimal head required for parsing)
 head:
-  - [-1, 1, Detect, [nc]]  # Detect layer
+  - [-1, 1, Detect, [nc]] # Detect layer
 

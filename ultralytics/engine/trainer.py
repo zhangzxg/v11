@@ -666,44 +666,44 @@ class BaseTrainer:
         if isinstance(self.model, torch.nn.Module):  # if model is loaded beforehand. No setup needed
             # Model was already created in YOLO.__init__, but we need to ensure it uses correct nc from dataset
             # For custom models, ALWAYS recreate with correct nc from dataset (since YOLO.__init__ doesn't know nc yet)
-            if hasattr(self.model, 'model') and hasattr(self.model.model, '__class__'):
+            if hasattr(self.model, "model") and hasattr(self.model.model, "__class__"):
                 model_class_name = self.model.model.__class__.__name__
                 if model_class_name == "YOLOv11SmallObjectDetector":
                     # Always recreate custom model with correct nc from dataset
-                    if hasattr(self, 'data') and 'nc' in self.data:
+                    if hasattr(self, "data") and "nc" in self.data:
                         # Get original config
-                        cfg = self.args.model if hasattr(self.args, 'model') and self.args.model else None
+                        cfg = self.args.model if hasattr(self.args, "model") and self.args.model else None
                         if cfg is None:
                             # Fallback: use YAML dict but update nc
-                            if hasattr(self.model, 'yaml') and isinstance(self.model.yaml, dict):
+                            if hasattr(self.model, "yaml") and isinstance(self.model.yaml, dict):
                                 cfg = self.model.yaml.copy()
-                                cfg['nc'] = self.data["nc"]  # Force update nc in dict
-                            elif hasattr(self.model, 'yaml') and isinstance(self.model.yaml, str):
+                                cfg["nc"] = self.data["nc"]  # Force update nc in dict
+                            elif hasattr(self.model, "yaml") and isinstance(self.model.yaml, str):
                                 cfg = self.model.yaml
                             else:
                                 raise RuntimeError("Cannot determine model config for recreation")
-                        
+
                         expected_channels = self.data["nc"] + 16 * 4  # nc + reg_max * 4
-                        
+
                         # ALWAYS recreate to ensure correct nc (model was created before dataset was loaded)
                         # Force recreate model with correct nc (no weights to avoid overriding head)
                         self.model = self.get_model(cfg=cfg, weights=None, verbose=RANK == -1)
-                        
+
                         # Set model.args for loss function initialization
-                        if not hasattr(self.model, 'args'):
+                        if not hasattr(self.model, "args"):
                             self.model.args = vars(self.args)
-                        
+
                         # Move model to device before initializing loss function
                         self.model = self.model.to(self.device)
-                        
+
                         # Reinitialize loss function with new model (after model is on device)
-                        if hasattr(self.model, 'init_criterion'):
+                        if hasattr(self.model, "init_criterion"):
                             self.model.criterion = self.model.init_criterion()
-                        
+
                         # Verify the new model has correct channels - CRITICAL CHECK
-                        if hasattr(self.model.model, 'head1') and len(self.model.model.head1) > 0:
+                        if hasattr(self.model.model, "head1") and len(self.model.model.head1) > 0:
                             new_head1_channels = self.model.model.head1[-1].out_channels
-                            new_nc = getattr(self.model.model, 'nc', None)
+                            new_nc = getattr(self.model.model, "nc", None)
                             if new_head1_channels != expected_channels:
                                 raise RuntimeError(
                                     f"Model recreation failed: head1 channels={new_head1_channels}, expected={expected_channels}. "
