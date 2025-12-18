@@ -3,6 +3,7 @@ cd ~/autodl-tmp
 cat > .gitignore << 'EOF'
 .autodl/
 yolov11/
+ETSD/
 
 __pycache__/
 *.py[cod]
