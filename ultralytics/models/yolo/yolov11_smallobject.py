@@ -82,7 +82,7 @@ class SmallObjectBranch(nn.Module):
             out = out + x
         return F.relu(out)
 
-# Swin 注意力窗口（简化 + 相对位置编码）
+# 简化 + 相对位置编码
 class LocalAttention(nn.Module):
     def __init__(self, dim, window_size=7, use_attention=True, use_pos_encoding=True):
         super().__init__()
@@ -115,9 +115,9 @@ class LocalAttention(nn.Module):
             qkv = self.to_qkv(x).reshape(B, 3, C, H, W)
             q, k, v = qkv[:,0], qkv[:,1], qkv[:,2]
             
-            window_threshold = 2000  # P2/P3 使用窗口，P4 走全局
+            window_threshold = 8192  # 约 P2=160x160，以上用窗口避免 OOM
             if H * W > window_threshold:
-                window_size = 5  # 窗口注意力
+                window_size = 5  # 更小窗口，控显存
                 h_windows = (H + window_size - 1) // window_size
                 w_windows = (W + window_size - 1) // window_size
                 h_pad = h_windows * window_size - H
@@ -190,7 +190,7 @@ class LocalAttention(nn.Module):
         else:
             return self.conv(x)
 
-# 跨尺度融合模块（改进版）
+# 跨尺度融合模块
 class CrossScaleAttention(nn.Module):
     def __init__(self, in_main, in_small, use_attention=True, use_pos_encoding=True):
         super().__init__()
@@ -210,13 +210,13 @@ class CrossScaleAttention(nn.Module):
         
         # 融合层：加宽中间通道（3x3 -> 3x3 -> 1x1）
         self.fuse = nn.Sequential(
-            nn.Conv2d(in_small * 2, 192, 3, padding=1, bias=False),
-            nn.BatchNorm2d(192),
+            nn.Conv2d(in_small * 2, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, 3, padding=1, bias=False),
-            nn.BatchNorm2d(192),
+            nn.Conv2d(256, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(192, in_small, 1, bias=False),
+            nn.Conv2d(256, in_small, 1, bias=False),
             nn.BatchNorm2d(in_small),
             nn.ReLU(inplace=True)
         )
