@@ -4,6 +4,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ultralytics.nn.modules.transformer import LayerNorm2d
 
 # Ghost模块
 class GhostModule(nn.Module):
@@ -13,12 +14,12 @@ class GhostModule(nn.Module):
         new_channels = out_channels - init_channels
         self.primary_conv = nn.Sequential(
             nn.Conv2d(in_channels, init_channels, kernel_size, padding=kernel_size // 2, bias=False),
-            nn.BatchNorm2d(init_channels),
+            LayerNorm2d(init_channels),
             nn.ReLU(inplace=True)
         )
         self.cheap_operation = nn.Sequential(
             nn.Conv2d(init_channels, new_channels, kernel_size=3, stride=1, padding=1, groups=init_channels, bias=False),
-            nn.BatchNorm2d(new_channels),
+            LayerNorm2d(new_channels),
             nn.ReLU(inplace=True)
         )
 
@@ -54,7 +55,7 @@ class SmallObjectBranch(nn.Module):
                 GhostModule(in_channels, 128),
                 GhostModule(128, 160),
                 nn.Conv2d(160, 128, 3, padding=1, bias=False),
-                nn.BatchNorm2d(128),
+                LayerNorm2d(128),
                 nn.ReLU(inplace=True),
                 SEBlock(128)
             )
@@ -62,13 +63,13 @@ class SmallObjectBranch(nn.Module):
             # 卷积版同样加宽
             self.block = nn.Sequential(
                 nn.Conv2d(in_channels, 128, 3, padding=1, bias=False),
-                nn.BatchNorm2d(128),
+                LayerNorm2d(128),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(128, 160, 3, padding=1, bias=False),
-                nn.BatchNorm2d(160),
+                LayerNorm2d(160),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(160, 128, 3, padding=1, bias=False),
-                nn.BatchNorm2d(128),
+                LayerNorm2d(128),
                 nn.ReLU(inplace=True),
                 SEBlock(128)
             )
@@ -105,7 +106,7 @@ class LocalAttention(nn.Module):
             # 使用标准卷积替代注意力机制
             self.conv = nn.Sequential(
                 nn.Conv2d(dim, dim, 3, padding=1, bias=False),
-                nn.BatchNorm2d(dim),
+                LayerNorm2d(dim),
                 nn.ReLU(inplace=True)
             )
 
@@ -201,7 +202,7 @@ class CrossScaleAttention(nn.Module):
         # 可学习门控
         self.gate = nn.Sequential(
             nn.Conv2d(in_small * 2, in_small, 1, bias=False),
-            nn.BatchNorm2d(in_small),
+            LayerNorm2d(in_small),
             nn.Sigmoid()
         )
         
@@ -211,13 +212,13 @@ class CrossScaleAttention(nn.Module):
         # 融合层：加宽中间通道（3x3 -> 3x3 -> 1x1）
         self.fuse = nn.Sequential(
             nn.Conv2d(in_small * 2, 192, 3, padding=1, bias=False),
-            nn.BatchNorm2d(192),
+            LayerNorm2d(192),
             nn.ReLU(inplace=True),
             nn.Conv2d(192, 192, 3, padding=1, bias=False),
-            nn.BatchNorm2d(192),
+            LayerNorm2d(192),
             nn.ReLU(inplace=True),
             nn.Conv2d(192, in_small, 1, bias=False),
-            nn.BatchNorm2d(in_small),
+            LayerNorm2d(in_small),
             nn.ReLU(inplace=True)
         )
 
@@ -265,24 +266,24 @@ class BackboneWithSmallBranch(nn.Module):
         self.use_small_branch = use_small_branch
         self.stem = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
+            LayerNorm2d(32),
             nn.ReLU()
         )
         self.layer1 = nn.Sequential(
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
+            LayerNorm2d(64),
             nn.ReLU()
         )
         if use_small_branch:
             self.small_branch = SmallObjectBranch(64, 128, use_ghost=use_ghost)
         self.layer2 = nn.Sequential(
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
-            nn.BatchNorm2d(128),
+            LayerNorm2d(128),
             nn.ReLU()
         )
         self.layer3 = nn.Sequential(
             nn.Conv2d(128, 256, 3, stride=2, padding=1),
-            nn.BatchNorm2d(256),
+            LayerNorm2d(256),
             nn.ReLU()
         )
 
@@ -383,33 +384,33 @@ class YOLOv11SmallObjectDetector(nn.Module):
         head3_in_channels = 256  # p4
         
         # 改进的检测头：增加特征提取能力和训练稳定性
-        # 使用BatchNorm和更多的卷积层来增强特征表达
+        # 使用LayerNorm和更多的卷积层来增强特征表达
         self.head1 = nn.Sequential(
             nn.Conv2d(head1_in_channels, 160, 3, padding=1, bias=False),
-            nn.BatchNorm2d(160),
+            LayerNorm2d(160),
             nn.ReLU(inplace=True),
             nn.Conv2d(160, 160, 3, padding=1, bias=False),
-            nn.BatchNorm2d(160),
+            LayerNorm2d(160),
             nn.ReLU(inplace=True),
             nn.Conv2d(160, no, 1)  # (nc + reg_max * 4)
         )
         
         self.head2 = nn.Sequential(
             nn.Conv2d(head2_in_channels, 320, 3, padding=1, bias=False),
-            nn.BatchNorm2d(320),
+            LayerNorm2d(320),
             nn.ReLU(inplace=True),
             nn.Conv2d(320, 320, 3, padding=1, bias=False),
-            nn.BatchNorm2d(320),
+            LayerNorm2d(320),
             nn.ReLU(inplace=True),
             nn.Conv2d(320, no, 1)  # (nc + reg_max * 4)
         )
         
         self.head3 = nn.Sequential(
             nn.Conv2d(head3_in_channels, 640, 3, padding=1, bias=False),
-            nn.BatchNorm2d(640),
+            LayerNorm2d(640),
             nn.ReLU(inplace=True),
             nn.Conv2d(640, 640, 3, padding=1, bias=False),
-            nn.BatchNorm2d(640),
+            LayerNorm2d(640),
             nn.ReLU(inplace=True),
             nn.Conv2d(640, no, 1)  # (nc + reg_max * 4)
         )
